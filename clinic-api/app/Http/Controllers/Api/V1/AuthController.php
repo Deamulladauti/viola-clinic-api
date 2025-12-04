@@ -17,11 +17,46 @@ class AuthController extends Controller
     {
         $data = $request->validated();
 
-        $user = User::create([
-            'name'     => $data['name'],
-            'email'    => $data['email'],
-            'password' => Hash::make($data['password']),
-        ]);
+        // Normalize email to lowercase if provided
+        if (!empty($data['email'])) {
+            $data['email'] = strtolower($data['email']);
+        }
+
+        // Check if a user with this phone already exists (pre-created user logic)
+        $existing = User::where('phone', $data['phone'])->first();
+
+        if ($existing) {
+            // If the existing user already has a password, treat as fully registered
+            if (!empty($existing->password)) {
+                return response()->json([
+                    'message' => 'An account with this phone already exists. Please log in or reset your password.',
+                    'code'    => 'PHONE_ALREADY_REGISTERED',
+                ], 409);
+            }
+
+            // Upgrade pre-created user
+            $existing->name     = $data['name'];
+            $existing->email    = $data['email'] ?? $existing->email;
+            $existing->password = Hash::make($data['password']);
+            $existing->save();
+
+            $user = $existing;
+        } else {
+            // Create a brand new user
+            $user = User::create([
+                'name'     => $data['name'],
+                'email'    => $data['email'] ?? null,
+                'phone'    => $data['phone'],
+                'password' => Hash::make($data['password']),
+            ]);
+        }
+
+        // Ensure client role
+        if (method_exists($user, 'assignRole') && ! $user->hasRole('client')) {
+            $user->assignRole('client');
+        }
+
+        $user->loadMissing('roles');
 
         $token = $user->createToken('mobile')->plainTextToken;
 
@@ -37,14 +72,27 @@ class AuthController extends Controller
     {
         $data = $request->validated();
 
-        $user = User::where('email', $data['email'])->first();
+        $identifier = $data['identifier'];
+        $password   = $data['password'];
 
-        if (! $user || ! Hash::check($data['password'], $user->password)) {
+        // Allow login by phone OR email (case-insensitive for email)
+        if (str_contains($identifier, '@')) {
+            // Treat as email
+            $user = User::whereRaw('LOWER(email) = ?', [strtolower($identifier)])
+                        ->first();
+        } else {
+            // Treat as phone
+            $user = User::where('phone', $identifier)->first();
+        }
+
+        if (! $user || ! Hash::check($password, $user->password)) {
             return response()->json([
                 'message' => 'Invalid credentials',
                 'code'    => 'INVALID_CREDENTIALS',
             ], 401);
         }
+
+        $user->loadMissing('roles');
 
         $token = $user->createToken('mobile')->plainTextToken;
 
@@ -58,8 +106,10 @@ class AuthController extends Controller
     // GET /api/v1/auth/me
     public function me(Request $request)
     {
+        $user = $request->user()->loadMissing('roles');
+
         return response()->json([
-            'data' => new UserResource($request->user()),
+            'user' => new UserResource($user),
         ]);
     }
 
@@ -67,6 +117,7 @@ class AuthController extends Controller
     public function logout(Request $request)
     {
         $request->user()->currentAccessToken()?->delete();
+
         return response()->noContent();
     }
 }

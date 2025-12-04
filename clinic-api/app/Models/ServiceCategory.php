@@ -1,8 +1,8 @@
 <?php
 
+// app/Models/ServiceCategory.php
 namespace App\Models;
 
-use App\Models\Service;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -17,7 +17,7 @@ class ServiceCategory extends Model
         'description',
         'is_active',
         'image_path',
-      ];
+    ];
 
     protected $casts = [
         'is_active' => 'boolean',
@@ -30,13 +30,11 @@ class ServiceCategory extends Model
         return $this->image_path ? asset('storage/'.$this->image_path) : null;
     }
 
-    // Relationships
     public function services()
     {
-        return $this->hasMany(Service::class, 'category_id');
+        return $this->hasMany(Service::class, 'service_category_id');
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('is_active', true);

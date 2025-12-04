@@ -13,33 +13,73 @@ class ServiceCategoryUpdateRequest extends FormRequest
         return true;
     }
 
+    /**
+     * Normalize only the fields that are actually present,
+     * so we can do partial updates (e.g. image-only).
+     */
     protected function prepareForValidation(): void
     {
-        $name = is_string($this->name) ? trim($this->name) : $this->name;
+        $merged = [];
 
-        // if slug missing, regenerate from (new) name; else trim provided slug
-        $slug = $this->has('slug') && $this->slug !== null
-            ? (is_string($this->slug) ? trim($this->slug) : $this->slug)
-            : ($name ? Str::slug((string) $name) : $this->slug);
+        // Only normalize name if it was sent
+        if ($this->has('name')) {
+            $name = is_string($this->name) ? trim($this->name) : $this->name;
+            $merged['name'] = $name;
 
-        $this->merge([
-            'name' => $name,
-            'slug' => $slug,
-        ]);
+            // If slug NOT sent but name is, auto-generate slug from name
+            if (!$this->has('slug') && $name) {
+                $merged['slug'] = Str::slug((string) $name);
+            }
+        }
+
+        // If slug was sent explicitly, normalize it
+        if ($this->has('slug')) {
+            $slug = is_string($this->slug) ? trim($this->slug) : $this->slug;
+            $merged['slug'] = $slug;
+        }
+
+        if (!empty($merged)) {
+            $this->merge($merged);
+        }
     }
 
     public function rules(): array
     {
-        // Route key could be 'category' or 'service_category' depending on your route.
-        // If using implicit binding with {category}, this will resolve correctly:
+        // Route key could be 'category' depending on your route model binding
         $id = $this->route('category')?->id ?? $this->route('category');
 
         return [
-            'name'        => ['required','string','max:120', Rule::unique('service_categories','name')->ignore($id)],
-            'slug'        => ['required','string','max:120', Rule::unique('service_categories','slug')->ignore($id)],
-            'description' => ['nullable','string','max:10000'],
-            'is_active'   => ['sometimes','boolean'],
-            'image' => ['nullable','image','max:3072'],
+            // name/slug become optional (only validated if present),
+            // but required IF they are present.
+            'name' => [
+                'sometimes',
+                'required',
+                'string',
+                'max:120',
+                Rule::unique('service_categories', 'name')->ignore($id),
+            ],
+            'slug' => [
+                'sometimes',
+                'required',
+                'string',
+                'max:120',
+                Rule::unique('service_categories', 'slug')->ignore($id),
+            ],
+            'description' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:10000',
+            ],
+            'is_active' => [
+                'sometimes',
+                'boolean',
+            ],
+            'image' => [
+                'sometimes',
+                'image',
+                'max:3072', // ~3MB
+            ],
         ];
     }
 }

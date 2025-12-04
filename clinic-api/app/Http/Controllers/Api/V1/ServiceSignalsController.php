@@ -7,14 +7,14 @@ use App\Models\Service;
 
 class ServiceSignalsController extends Controller
 {
-    // POST /api/v1/signals/services/{slug}/view
-    public function view(string $slug)
+    // POST /api/v1/signals/services/{id}/view
+    public function view(int $id)
 {
-    $service =  Service::where('slug', $slug)->first();
+    $service =  Service::find($id);
     if (!$service) {
         return response()->json(['ok' => false, 'message' => 'Service not found'], 404);
     }
     $service->increment('views_count');
-    return response()->json(['ok' => true, 'slug' => $service->slug, 'views' => (int) $service->views_count]);
+    return response()->json(['ok' => true, 'id' => $service->id, 'views' => (int) $service->views_count]);
 }
 }
