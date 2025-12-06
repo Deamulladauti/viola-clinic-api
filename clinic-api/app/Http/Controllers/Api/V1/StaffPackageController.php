@@ -2,15 +2,15 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Http\Controllers\Controller;
 use App\Models\Appointment;
-use Illuminate\Http\Request;
 use App\Models\AppointmentLog;
 use App\Models\ServicePackage;
+use App\Models\PackageLog;           // ✅ use the correct log model
+use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
-use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\DB;
-use App\Http\Controllers\Controller;
-use App\Models\ServicePackageLog;
+use Illuminate\Validation\Rule;
 
 /**
  * Staff area — package utilities while working with clients.
@@ -21,10 +21,11 @@ use App\Models\ServicePackageLog;
  *  - manually consume sessions/minutes (walk-ins, extra usage)
  *
  * Routes to match:
- *  GET   /api/v1/staff/packages            -> index (you'll need to add this route if not present)
- *  PATCH /api/v1/staff/appointments/{id}/attach-package   -> attachToAppointment (route to be added)
- *  PATCH /api/v1/staff/appointments/{id}/detach-package   -> detachFromAppointment (route to be added)
- *  POST  /api/v1/staff/packages/{package}/use             -> usePackage (already defined in your snippet)
+ *  GET   /api/v1/staff/packages                         -> index
+ *  PATCH /api/v1/staff/appointments/{id}/attach-package -> attachToAppointment
+ *  PATCH /api/v1/staff/appointments/{id}/detach-package -> detachFromAppointment
+ *  POST  /api/v1/staff/packages/{package}/use           -> usePackage
+ *  POST  /api/v1/staff/packages/{package}/payments      -> addPayment (if routed)
  */
 class StaffPackageController extends Controller
 {
@@ -253,13 +254,33 @@ class StaffPackageController extends Controller
 
             $package->save();
 
-            // Log usage (per-package log)
-            ServicePackageLog::create([
+            // 🔎 Decide what to log
+            $usedSessions   = null;
+            $usedMinutes    = null;
+
+            if ($data['type'] === 'session') {
+                $usedSessions = $amount;
+            } else {
+                $usedMinutes = $amount;
+            }
+
+            $appointmentId  = $data['appointment_id'] ?? null;
+            $appointmentRef = null;
+
+            if ($appointmentId) {
+                $appointment   = Appointment::find($appointmentId);
+                $appointmentRef = $appointment?->reference_code;
+            }
+
+            // ✅ Log usage into PackageLog
+            PackageLog::create([
                 'service_package_id' => $package->id,
-                'appointment_id'     => $data['appointment_id'] ?? null,
-                'performed_by'       => $staff->id,
-                'type'               => $data['type'],
-                'amount'             => $amount,
+                'staff_id'           => $staff->id,
+                'appointment_id'     => $appointmentId,
+                'appointment_ref'    => $appointmentRef,
+                'used_sessions'      => $usedSessions,
+                'used_minutes'       => $usedMinutes,
+                'used_at'            => now(),
                 'note'               => $data['note'] ?? null,
             ]);
         });
@@ -277,64 +298,67 @@ class StaffPackageController extends Controller
         ]);
     }
 
+    /**
+     * POST /api/v1/staff/packages/{package}/payments
+     * Staff adds a payment toward this package.
+     */
     public function addPayment(Request $request, ServicePackage $package)
-{
-    $staff = $request->user()->staff;
-    abort_if(!$staff, 403, 'Not a staff member');
+    {
+        $staff = $request->user()->staff;
+        abort_if(!$staff, 403, 'Not a staff member');
 
-    $data = $request->validate([
-        'amount'         => ['required', 'numeric', 'min:0.01'],
-        'method'         => ['required', 'in:cash,card,bank,other'],
-        'note'           => ['nullable', 'string', 'max:1000'],
-        'appointment_id' => ['nullable', 'integer', 'exists:appointments,id'],
-    ]);
-
-    // Total price for this package
-    $priceTotal = (float) ($package->price_total ?? $package->price_paid ?? 0);
-    $alreadyPaid = (float) $package->amount_paid;   // <- from accessor
-    $remaining   = max(0, $priceTotal - $alreadyPaid);
-
-    if ($priceTotal <= 0) {
-        return response()->json([
-            'ok'      => false,
-            'message' => 'Package has no total price set.',
-        ], 422);
-    }
-
-    if ($data['amount'] > $remaining + 0.01) {
-        return response()->json([
-            'ok'               => false,
-            'message'          => 'Amount exceeds remaining balance.',
-            'remaining_before' => $remaining,
-        ], 422);
-    }
-
-    DB::transaction(function () use ($package, $data, $staff) {
-        $package->payments()->create([
-            'service_package_id' => $package->id,
-            'appointment_id'     => $data['appointment_id'] ?? null,
-            'user_id'            => $package->user_id,           // owner of the package
-            'staff_id'           => $staff->id,
-            'admin_id'           => null,                        // or set if admin endpoint
-            'method'             => $data['method'],
-            'amount'             => $data['amount'],
-            'currency'           => $package->currency ?? 'EUR',
-            'notes'              => $data['note'] ?? null,
+        $data = $request->validate([
+            'amount'         => ['required', 'numeric', 'min:0.01'],
+            'method'         => ['required', 'in:cash,card,bank,other'],
+            'note'           => ['nullable', 'string', 'max:1000'],
+            'appointment_id' => ['nullable', 'integer', 'exists:appointments,id'],
         ]);
 
-        // Refresh inside transaction if you want, but we also do it after
+        // Total price for this package
+        $priceTotal = (float) ($package->price_total ?? $package->price_paid ?? 0);
+        $alreadyPaid = (float) $package->amount_paid;   // accessor on ServicePackage
+        $remaining   = max(0, $priceTotal - $alreadyPaid);
+
+        if ($priceTotal <= 0) {
+            return response()->json([
+                'ok'      => false,
+                'message' => 'Package has no total price set.',
+            ], 422);
+        }
+
+        if ($data['amount'] > $remaining + 0.01) {
+            return response()->json([
+                'ok'               => false,
+                'message'          => 'Amount exceeds remaining balance.',
+                'remaining_before' => $remaining,
+            ], 422);
+        }
+
+        DB::transaction(function () use ($package, $data, $staff) {
+            $package->payments()->create([
+                'service_package_id' => $package->id,
+                'appointment_id'     => $data['appointment_id'] ?? null,
+                'user_id'            => $package->user_id,           // owner of the package
+                'staff_id'           => $staff->id,
+                'admin_id'           => null,                        // or set if admin endpoint
+                'method'             => $data['method'],
+                'amount'             => $data['amount'],
+                'currency'           => $package->currency ?? 'EUR',
+                'notes'              => $data['note'] ?? null,
+            ]);
+
+            $package->refresh();
+        });
+
         $package->refresh();
-    });
 
-    $package->refresh();
-
-    return response()->json([
-        'ok'                => true,
-        'message'           => 'Payment recorded (staff).',
-        'package_id'        => $package->id,
-        'price_total'       => (float) ($package->price_total ?? 0),
-        'amount_paid'       => (float) $package->amount_paid,        // from payments
-        'remaining_balance' => (float) $package->remaining_to_pay,   // accessor
-    ]);
-}
+        return response()->json([
+            'ok'                => true,
+            'message'           => 'Payment recorded (staff).',
+            'package_id'        => $package->id,
+            'price_total'       => (float) ($package->price_total ?? 0),
+            'amount_paid'       => (float) $package->amount_paid,
+            'remaining_balance' => (float) $package->remaining_to_pay,
+        ]);
+    }
 }

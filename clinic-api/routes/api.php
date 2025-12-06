@@ -76,6 +76,9 @@ Route::prefix('v1')->group(function () {
 
     // ── Admin area ──────────────────────────────────────────────────────────────
     Route::middleware(['auth:sanctum','role:admin'])->prefix('admin')->group(function () {
+
+        Route::post('me/change-password', [MeController::class, 'changePassword']);
+
         // Categories
         Route::get   ('categories',                [ServiceCategoryController::class, 'index']);
         Route::post  ('categories',                [ServiceCategoryController::class, 'store']);
@@ -174,6 +177,7 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
     Route::get('clients/lookup', [StaffClientController::class, 'lookupByPhone']);
     Route::get('services', [StaffServiceController::class, 'index']);
     Route::get('me', [StaffProfileController::class, 'show']);
+    Route::post('me/change-password', [MeController::class, 'changePassword']);
     
 
 
