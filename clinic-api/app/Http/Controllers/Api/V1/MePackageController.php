@@ -36,22 +36,27 @@ class MePackageController extends Controller
 
         // Map a clean payload
         $data = $packages->through(function (ServicePackage $p) {
-            return [
-                'id'                 => $p->id,
-                'service'            => [
-                    'id'   => $p->service_id,
-                    'name' => $p->service?->name ?? $p->service_name,
-                ],
-                'status'             => $p->status,
-                'starts_on'          => optional($p->starts_on)?->toDateString(),
-                'expires_on'         => optional($p->expires_on)?->toDateString(),
-                'price_paid'         => $p->price_paid,
-                'currency'           => $p->currency,
-                'remaining_sessions' => $p->remaining_sessions,
-                'remaining_minutes'  => $p->remaining_minutes,
-                'is_exhausted'       => $p->isExhausted(),
-            ];
-        });
+        return [
+            'id'      => $p->id,
+            'service' => [
+                'id'   => $p->service_id,
+                'name' => $p->service?->name ?? $p->service_name,
+            ],
+            'status'    => $p->status,
+            'starts_on' => optional($p->starts_on)?->toDateString(),
+
+            // ✅ payments
+            'price_total'       => (float) ($p->price_total ?? $p->price_paid ?? 0),
+            'amount_paid'       => (float) $p->amount_paid,
+            'remaining_payment' => (float) $p->remaining_to_pay,
+            'currency'          => $p->currency,
+
+            'remaining_sessions' => $p->remaining_sessions,
+            'remaining_minutes'  => $p->remaining_minutes,
+            'is_exhausted'       => $p->isExhausted(),
+        ];
+    });
+
 
         return response()->json([
             'data' => $data,
@@ -77,17 +82,21 @@ class MePackageController extends Controller
 
         return response()->json([
             'data' => [
-                'id'                 => $package->id,
-                'service'            => [
+                'id'      => $package->id,
+                'service' => [
                     'id'   => $package->service_id,
                     'name' => $package->service?->name ?? $package->service_name,
                     'slug' => $package->service?->slug,
                 ],
-                'status'             => $package->status,
-                'starts_on'          => optional($package->starts_on)?->toDateString(),
-                'expires_on'         => optional($package->expires_on)?->toDateString(),
-                'price_paid'         => $package->price_paid,
-                'currency'           => $package->currency,
+                'status'    => $package->status,
+                'starts_on' => optional($package->starts_on)?->toDateString(),
+
+                // ✅ payments
+                'price_total'       => (float) ($package->price_total ?? $package->price_paid ?? 0),
+                'amount_paid'       => (float) $package->amount_paid,
+                'remaining_payment' => (float) $package->remaining_to_pay,
+                'currency'          => $package->currency,
+
                 'remaining_sessions' => $package->remaining_sessions,
                 'remaining_minutes'  => $package->remaining_minutes,
                 'snapshot'           => [
@@ -104,5 +113,6 @@ class MePackageController extends Controller
                 ]),
             ],
         ]);
+
     }
 }
