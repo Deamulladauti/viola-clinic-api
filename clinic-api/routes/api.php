@@ -202,5 +202,13 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
     // Manual package usage (sessions/minutes)
     Route::post ('packages/{package}/use',            [StaffPackageController::class, 'usePackage'])->whereNumber('package');
     Route::post ('packages/{package}/payments',       [StaffPackageController::class, 'addPayment'])->whereNumber('package');
+    Route::get('clients', [StaffClientController::class, 'search']);
+    Route::post('packages', [StaffPackageController::class, 'store']);
+
+    Route::get('clients/{client}/packages', [StaffPackageController::class, 'forClient'])->whereNumber('client');
+    Route::get('packages/{package}/logs', [StaffPackageController::class, 'logs'])->whereNumber('package');
+
+
+
 });
 });

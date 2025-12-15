@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\User;
+use Illuminate\Support\Str;
 
 class StaffClientController extends Controller
 {
@@ -61,6 +62,51 @@ class StaffClientController extends Controller
                 'email' => $user->email,
                 'phone' => $user->phone,
             ],
+        ]);
+    }
+
+    public function search(Request $request)
+    {
+        $validated = $request->validate([
+            's'        => ['required', 'string', 'min:1', 'max:80'],
+            'per_page' => ['sometimes', 'integer', 'min:1', 'max:30'],
+        ]);
+
+        $s = trim($validated['s']);
+        $perPage = (int) ($validated['per_page'] ?? 20);
+
+        // Digits for phone search
+        $digits = preg_replace('/\D+/', '', $s);
+
+        $q = User::query()
+            ->whereHas('roles', function ($q) {
+                $q->where('name', 'client');
+            })
+            ->where(function ($q) use ($s, $digits) {
+                // name/email search
+                $q->where('name', 'like', "%{$s}%")
+                ->orWhere('email', 'like', "%{$s}%");
+
+                // phone search (raw + digits variants)
+                if ($digits !== '') {
+                    $q->orWhere('phone', 'like', "%{$digits}%")
+                    ->orWhere('phone', 'like', "%+{$digits}%")
+                    ->orWhere('phone', 'like', "%{$s}%");
+                } else {
+                    $q->orWhere('phone', 'like', "%{$s}%");
+                }
+            })
+            ->orderBy('name')
+            ->limit($perPage)
+            ->get(['id','name','email','phone']);
+
+        return response()->json([
+            'data' => $q->map(fn($u) => [
+                'id'    => $u->id,
+                'name'  => $u->name,
+                'email' => $u->email,
+                'phone' => $u->phone,
+            ]),
         ]);
     }
 }
