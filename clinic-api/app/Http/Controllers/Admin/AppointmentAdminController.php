@@ -71,6 +71,124 @@ class AppointmentAdminController extends Controller
         ]);
     }
 
+   
+    public function calendar(Request $request)
+    {
+        $data = $request->validate([
+            'from'       => ['required', 'date_format:Y-m-d'],
+            'to'         => ['required', 'date_format:Y-m-d', 'after_or_equal:from'],
+            'status'     => ['nullable'], // string "pending,confirmed" OR array
+            'staff_id'   => ['nullable', 'integer'],
+            'service_id' => ['nullable', 'integer'],
+        ]);
+
+        $from = Carbon::createFromFormat('Y-m-d', $data['from'])->startOfDay();
+        $to   = Carbon::createFromFormat('Y-m-d', $data['to'])->endOfDay();
+
+        $q = Appointment::query()
+            ->with([
+                'service.category',
+                'staff',
+                'user',
+                // If you have a payments relation on Appointment, uncomment:
+                // 'payments',
+            ])
+            ->whereBetween('date', [$from->toDateString(), $to->toDateString()]);
+
+        // status filter: supports CSV or array
+        if (!empty($data['status'])) {
+            $statuses = is_array($data['status'])
+                ? $data['status']
+                : array_values(array_filter(array_map('trim', explode(',', (string) $data['status']))));
+
+            if (!empty($statuses)) {
+                $q->whereIn('status', $statuses);
+            }
+        }
+
+        if (!empty($data['staff_id'])) {
+            $q->where('staff_id', (int) $data['staff_id']);
+        }
+
+        if (!empty($data['service_id'])) {
+            $q->where('service_id', (int) $data['service_id']);
+        }
+
+        $appointments = $q
+            ->orderBy('date', 'asc')
+            ->orderBy('starts_at', 'asc')
+            ->orderBy('id', 'asc')
+            ->get();
+
+        $items = $appointments->map(function (Appointment $a) {
+            $service  = $a->service;
+            $category = $service?->category;
+            $staff    = $a->staff;
+            $user     = $a->user;
+
+            $dateStr = $a->date instanceof Carbon
+                ? $a->date->toDateString()
+                : Carbon::parse($a->date)->toDateString();
+
+            // starts_at in your DB looks like "HH:MM" or "HH:MM:SS"
+            $startTime = (string) $a->starts_at;
+            $startTime = strlen($startTime) === 5 ? $startTime . ':00' : $startTime;
+
+            $duration = (int) ($a->duration_minutes ?? $service?->duration_minutes ?? 0);
+
+            // build a proper ISO start/end for the calendar UI
+            $start = Carbon::parse($dateStr . ' ' . $startTime);
+            $end   = (clone $start)->addMinutes(max(0, $duration));
+
+            // paid flag (choose one based on your schema)
+            // If appointment has payments relation + sum:
+            // $paidSum = $a->payments?->sum('amount') ?? 0;
+            // $isPaid  = (float)$paidSum >= (float)($a->price ?? 0);
+
+            // For now use what you already expose:
+            $isPaid = null; // we’ll wire it properly once you confirm your payments schema
+
+            return [
+                'id'        => $a->id,
+                'status'    => $a->status,
+
+                'starts_at' => $start->toIso8601String(),
+                'ends_at'   => $end->toIso8601String(),
+
+                'date'      => $dateStr,
+                'time'      => substr($startTime, 0, 5), // "HH:MM"
+                'duration_minutes' => $duration,
+
+                'price'     => (float) ($a->price ?? 0),
+                'is_paid'   => $isPaid,
+
+                'customer' => [
+                    'id'    => $user?->id,
+                    'name'  => $a->customer_name ?? $user?->name,
+                    'phone' => $a->customer_phone ?? $user?->phone,
+                ],
+
+                'service' => $service ? [
+                    'id'       => $service->id,
+                    'name'     => $service->name,
+                    'category' => $category?->name,
+                ] : null,
+
+                'staff' => $staff ? [
+                    'id'   => $staff->id,
+                    'name' => $staff->name,
+                ] : null,
+            ];
+        })->values();
+
+        return response()->json([
+            'from'  => $data['from'],
+            'to'    => $data['to'],
+            'items' => $items,
+        ]);
+    }
+
+
     // 5) Admin create
     public function store(AppointmentStoreRequest $request)
     {

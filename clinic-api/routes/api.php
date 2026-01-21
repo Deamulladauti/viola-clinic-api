@@ -101,6 +101,8 @@ Route::prefix('v1')->group(function () {
         Route::patch ('appointments/{appointment}/status', [AppointmentAdminController::class, 'updateStatus'])->whereNumber('appointment');
         Route::get('bookings/{appointment}', [AppointmentAdminController::class, 'showBooking']);
         Route::post('appointments/{appointment}/payments', [PaymentController::class, 'storeForAppointment'])->whereNumber('appointment');
+        Route::get('appointments/calendar', [AppointmentAdminController::class, 'calendar']);
+
 
         // Staff admin
         Route::get   ('staff',                     [StaffAdminController::class, 'index']);
