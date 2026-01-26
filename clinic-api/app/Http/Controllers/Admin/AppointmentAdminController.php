@@ -340,150 +340,153 @@ class AppointmentAdminController extends Controller
     }
 
      public function showBooking(Request $request, Appointment $appointment)
-{
-    $appointment->loadMissing([
-        'service.category',
-        'staff',
-        'user',
-        'package.logs',   // 🔥 load usage logs for the package
-        'logs.user',
-    ]);
+    {
+        $appointment->loadMissing([
+            'service.category',
+            'staff',
+            'user',
+            'package.logs',   // usage logs
+            'logs.user',
+        ]);
 
-    $service  = $appointment->service;
-    $category = $service?->category;
-    $staff    = $appointment->staff;
-    $user     = $appointment->user;      // alias for client()
-    $package  = $appointment->package;   // ServicePackage via service_package_id
+        $service  = $appointment->service;
+        $category = $service?->category;
+        $staff    = $appointment->staff;
+        $user     = $appointment->user;
+        $package  = $appointment->package;
 
-    // ----------------------
-    // 💰 Price calculations
-    // ----------------------
-    $appointmentPrice = (float) ($appointment->price ?? 0.0);
+        // ----------------------
+        // 💰 Price calculations
+        // ----------------------
+        $appointmentPrice = (float) ($appointment->price ?? 0.0);
 
-    // Prefer new schema: price_total + amount_paid
-    $packagePriceTotal = $package?->price_total; // may be null
-    $packagePricePaid  = $package?->amount_paid ?? $package?->price_paid;
+        // If we have a package with a total, booking total is the package total
+        $packageTotal = $package && $package->price_total !== null
+            ? (float) $package->price_total
+            : null;
 
-    // total_price for this booking:
-    // - if package exists & has total -> use package total
-    // - otherwise fall back to appointment price
-    if ($package && $packagePriceTotal !== null) {
-        $totalPrice = (float) $packagePriceTotal;
-    } else {
-        $totalPrice = $appointmentPrice;
-    }
+        // ✅ Use accessors (computed from payments()) when available
+        // If your model has getAmountPaidAttribute / getRemainingToPayAttribute, these will reflect new payments immediately.
+        $packagePaid = $package
+            ? (float) ($package->amount_paid ?? 0)
+            : 0.0;
 
-    // remaining_price from package if possible
-    $remainingPrice = null;
-    if ($package && $packagePriceTotal !== null && $packagePricePaid !== null) {
-        $remainingPrice = max(
-            0,
-            (float)$packagePriceTotal - (float)$packagePricePaid
-        );
-    }
+        $packageRemaining = null;
+        if ($packageTotal !== null) {
+            $packageRemaining = max(0, $packageTotal - $packagePaid);
+        }
 
-    return response()->json([
-        'id'             => $appointment->id,
-        'reference_code' => $appointment->reference_code,
-        'status'         => $appointment->status,
+        $totalPrice = $packageTotal !== null ? $packageTotal : $appointmentPrice;
 
-        'date'      => $appointment->date instanceof Carbon
-            ? $appointment->date->toDateString()
-            : (string) $appointment->date,
-        'starts_at' => (string) $appointment->starts_at,
-        'duration_minutes' => $appointment->duration_minutes,
+        // remaining_price:
+        // - if package exists: remaining balance of package
+        // - else: null (your mobile UI treats null as "unpaid / full remaining" already)
+        $remainingPrice = $packageTotal !== null ? $packageRemaining : null;
 
-        // 💰 Prices on this booking
-        'price'           => $appointmentPrice,  // single-session price
-        'total_price'     => $totalPrice,        // package total or appointment price
-        'remaining_price' => $remainingPrice,    // null if no package / no info
+        return response()->json([
+            'id'             => $appointment->id,
+            'reference_code' => $appointment->reference_code,
+            'status'         => $appointment->status,
 
-        'notes'       => $appointment->notes,
-        'admin_notes' => $appointment->admin_notes,
+            'date' => $appointment->date instanceof Carbon
+                ? $appointment->date->toDateString()
+                : Carbon::parse($appointment->date)->toDateString(),
 
-        'customer' => [
-            'id'    => $user?->id,
-            'name'  => $appointment->customer_name ?? $user?->name,
-            'email' => $appointment->customer_email ?? $user?->email,
-            'phone' => $appointment->customer_phone ?? $user?->phone,
-        ],
+            'starts_at'         => (string) $appointment->starts_at,
+            'duration_minutes'  => (int) ($appointment->duration_minutes ?? $service?->duration_minutes ?? 0),
 
-        'service' => $service ? [
-            'id'               => $service->id,
-            'name'             => $service->name,
-            'slug'             => $service->slug,
-            'duration_minutes' => $service->duration_minutes,
-            'base_price'       => $service->price,
-            'category'         => $category ? [
-                'id'   => $category->id,
-                'name' => $category->name,
-                'slug' => $category->slug ?? null,
+            // 💰 Prices on this booking
+            'price'           => $appointmentPrice,   // single appointment price
+            'total_price'     => (float) $totalPrice, // package total OR appointment price
+            'remaining_price' => $remainingPrice,     // package remaining OR null
+
+            'notes'       => $appointment->notes,
+            'admin_notes' => $appointment->admin_notes,
+
+            'customer' => [
+                'id'    => $user?->id,
+                'name'  => $appointment->customer_name ?? $user?->name,
+                'email' => $appointment->customer_email ?? $user?->email,
+                'phone' => $appointment->customer_phone ?? $user?->phone,
+            ],
+
+            'service' => $service ? [
+                'id'               => $service->id,
+                'name'             => $service->name,
+                'slug'             => $service->slug,
+                'duration_minutes' => (int) ($service->duration_minutes ?? 0),
+                'base_price'       => (float) ($service->price ?? 0),
+                'category'         => $category ? [
+                    'id'   => $category->id,
+                    'name' => $category->name,
+                    'slug' => $category->slug ?? null,
+                ] : null,
             ] : null,
-        ] : null,
 
-        'staff' => $staff ? [
-            'id'    => $staff->id,
-            'name'  => $staff->name,
-            'email' => $staff->email,
-            'phone' => $staff->phone,
-        ] : null,
+            'staff' => $staff ? [
+                'id'    => $staff->id,
+                'name'  => $staff->name,
+                'email' => $staff->email,
+                'phone' => $staff->phone,
+            ] : null,
 
-        'package' => $package ? [
-            'id'                 => $package->id,
-            'service_id'         => $package->service_id,
-            'service_name'       => $package->service_name,
-            'status'             => $package->status,
+            'package' => $package ? [
+                'id'           => $package->id,
+                'service_id'   => $package->service_id,
+                'service_name' => $package->service_name,
+                'status'       => $package->status,
 
-            'price_total'        => $package->price_total !== null
-                ? (float) $package->price_total
-                : null,
-            'price_paid'         => $package->price_paid !== null
-                ? (float) $package->price_paid
-                : null,
-            'amount_paid'        => $package->amount_paid !== null
-                ? (float) $package->amount_paid
-                : null,
+                // 💰 money (use new model)
+                'price_total' => $package->price_total !== null ? (float) $package->price_total : null,
 
-            // 💰 balance at package level (same as remaining_price, but scoped to package)
-            'remaining_balance'  => $remainingPrice,
+                // legacy mirror (kept only for backwards compatibility)
+                'price_paid'  => $package->price_paid !== null ? (float) $package->price_paid : null,
 
-            'remaining_sessions' => $package->remaining_sessions,
-            'remaining_minutes'  => $package->remaining_minutes,
-            'starts_on'          => optional($package->starts_on)->toDateString(),
-            'expires_on'         => optional($package->expires_on)->toDateString(),
+                // ✅ Accessors (should reflect payments table)
+                'amount_paid'       => (float) ($package->amount_paid ?? 0),
+                'remaining_to_pay'  => (float) ($package->remaining_to_pay ?? ($packageRemaining ?? 0)),
 
-            // 🧾 usage history: when sessions/minutes were spent
-            'usage_logs'         => $package->logs->map(function ($log) {
+                // same as remaining_price but scoped to package
+                'remaining_balance' => $packageRemaining,
+
+                'remaining_sessions' => $package->remaining_sessions,
+                'remaining_minutes'  => $package->remaining_minutes,
+                'starts_on'          => optional($package->starts_on)->toDateString(),
+                'expires_on'         => optional($package->expires_on)->toDateString(),
+
+                // 🧾 usage history
+                'usage_logs' => $package->logs->map(function ($log) {
+                    return [
+                        'id'            => $log->id,
+                        'used_sessions' => $log->used_sessions,
+                        'used_minutes'  => $log->used_minutes,
+                        'used_at'       => optional($log->used_at)?->toDateTimeString(),
+                        'staff_id'      => $log->staff_id,
+                        'note'          => $log->note,
+                    ];
+                })->values(),
+            ] : null,
+
+            'created_at' => $appointment->created_at?->toIso8601String(),
+            'updated_at' => $appointment->updated_at?->toIso8601String(),
+
+            'logs' => $appointment->logs->map(function (AppointmentLog $log) {
                 return [
-                    'id'            => $log->id,
-                    'used_sessions' => $log->used_sessions,
-                    'used_minutes'  => $log->used_minutes,
-                    'used_at'       => optional($log->used_at)?->toDateTimeString(),
-                    'staff_id'      => $log->staff_id,
-                    'note'          => $log->note,
+                    'id'         => $log->id,
+                    'action'     => $log->action,
+                    'details'    => $log->details,
+                    'meta'       => $log->meta,
+                    'created_at' => $log->created_at?->toIso8601String(),
+                    'user'       => $log->user ? [
+                        'id'    => $log->user->id,
+                        'name'  => $log->user->name,
+                        'email' => $log->user->email,
+                    ] : null,
                 ];
             })->values(),
-        ] : null,
+        ]);
+    }
 
-        'created_at' => $appointment->created_at?->toIso8601String(),
-        'updated_at' => $appointment->updated_at?->toIso8601String(),
-
-        'logs' => $appointment->logs->map(function (AppointmentLog $log) {
-            return [
-                'id'         => $log->id,
-                'action'     => $log->action,
-                'details'    => $log->details,
-                'meta'       => $log->meta,
-                'created_at' => $log->created_at?->toIso8601String(),
-                'user'       => $log->user ? [
-                    'id'    => $log->user->id,
-                    'name'  => $log->user->name,
-                    'email' => $log->user->email,
-                ] : null,
-            ];
-        })->values(),
-    ]);
-}
 
 
 
