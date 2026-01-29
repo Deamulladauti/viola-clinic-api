@@ -443,23 +443,25 @@ class AppointmentAdminController extends Controller
                 'expires_on'         => optional($package->expires_on)->toDateString(),
 
                 // ✅ Payments history (THIS is what your UI needs)
-                'payments' => $package->payments
-                    ->whereNull('voided_at')
-                    ->sortByDesc('id')
-                    ->values()
-                    ->map(function ($p) {
-                        return [
-                            'id'             => $p->id,
-                            'amount'         => (float) $p->amount,
-                            'currency'       => $p->currency,
-                            'method'         => $p->method,
-                            'note'           => $p->notes,
-                            'appointment_id' => $p->appointment_id,
-                            'staff_id'       => $p->staff_id,
-                            'admin_id'       => $p->admin_id,
-                            'created_at'     => $p->created_at?->toIso8601String(),
-                        ];
-                    }),
+                'payments' => $package->payments()
+                ->whereNull('voided_at')
+                ->orderByDesc('id')
+                ->get()
+                ->map(function ($p) {
+                    return [
+                        'id'             => $p->id,
+                        'amount'         => (float) $p->amount,
+                        'currency'       => $p->currency,
+                        'method'         => $p->method,
+                        'note'           => $p->notes,
+                        'appointment_id' => $p->appointment_id,
+                        'staff_id'       => $p->staff_id,
+                        'admin_id'       => $p->admin_id,
+                        'created_at'     => $p->created_at?->toIso8601String(),
+                    ];
+                })
+                ->values(),
+
 
                 // 🧾 usage history
                 'usage_logs' => $package->logs->map(function ($log) {
