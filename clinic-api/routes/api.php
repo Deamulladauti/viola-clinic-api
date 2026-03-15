@@ -23,6 +23,7 @@ use App\Http\Controllers\Api\V1\StaffProfileController;
 use App\Http\Controllers\Api\V1\StaffClientController;
 use App\Http\Controllers\Api\V1\StaffServiceController;
 use App\Http\Controllers\Api\V1\PaymentController;
+use App\Http\Controllers\Admin\AdminClientController;
 use Illuminate\Support\Facades\Hash;
 
 
@@ -102,6 +103,7 @@ Route::prefix('v1')->group(function () {
         Route::get('bookings/{appointment}', [AppointmentAdminController::class, 'showBooking']);
         Route::post('appointments/{appointment}/payments', [PaymentController::class, 'storeForAppointment'])->whereNumber('appointment');
         Route::get('appointments/calendar', [AppointmentAdminController::class, 'calendar']);
+        Route::get('clients/lookup', [AdminClientController::class, 'lookupByPhone']);
 
 
         // Staff admin
