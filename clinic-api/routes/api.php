@@ -8,6 +8,7 @@ use App\Http\Controllers\Admin\ServiceCategoryController;
 use App\Http\Controllers\Api\V1\PublicCategoryController;
 use App\Http\Controllers\Api\V1\ServiceSignalsController;
 use App\Http\Controllers\Admin\AppointmentAdminController;
+use App\Http\Controllers\Admin\AdminInsightsController;
 use App\Http\Controllers\Public\AppointmentPublicController;
 use App\Http\Controllers\Admin\StaffAdminController;
 use App\Http\Controllers\Api\V1\MeController;
@@ -103,7 +104,18 @@ Route::prefix('v1')->group(function () {
         Route::get('bookings/{appointment}', [AppointmentAdminController::class, 'showBooking']);
         Route::post('appointments/{appointment}/payments', [PaymentController::class, 'storeForAppointment'])->whereNumber('appointment');
         Route::get('appointments/calendar', [AppointmentAdminController::class, 'calendar']);
-        Route::get('clients/lookup', [AdminClientController::class, 'lookupByPhone']);
+
+        Route::get('insights', [AdminInsightsController::class, 'index']);
+       
+
+        Route::get('/clients/lookup', [AdminClientController::class, 'lookupByPhone']);
+        Route::get('/clients/search', [AdminClientController::class, 'search']);
+        Route::get('/clients/{id}', [AdminClientController::class, 'show']);
+
+
+        // NEW
+        Route::get('/packages/{package}/logs', [AdminPackageController::class, 'logs']);
+        Route::post('/packages/{package}/use', [AdminPackageController::class, 'use']);
 
 
         // Staff admin
