@@ -101,11 +101,27 @@ class ServiceController extends Controller
     }
 
     // GET /api/admin/services/{service}
-    public function show(Service $service)
+   public function show(Service $service)
     {
-        return response()->json(
-            $service->load(['category:id,name,slug', 'tags:id,name,slug', 'staff:id,name,email'])
-        );
+        $service->load([
+            'category:id,name,slug',
+            'tags:id,name,slug',
+            'staff:id,name,email'
+        ]);
+
+        return response()->json([
+            'id' => $service->id,
+            'service_category_id' => $service->service_category_id,
+            'name' => $service->name,
+            'description' => $service->description,
+            'price' => $service->price,
+            'duration_minutes' => $service->duration_minutes,
+            'is_active' => $service->is_active,
+            'image_url' => $service->image_url,
+            'category' => $service->category,
+            'tags' => $service->tags,
+            'staff' => $service->staff,
+        ]);
     }
 
     // POST /api/admin/services
