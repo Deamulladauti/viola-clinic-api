@@ -93,6 +93,8 @@ Route::prefix('v1')->group(function () {
         Route::get   ('services/{id}',        [ServiceController::class, 'show'])->whereNumber('id');
         Route::match (['put','patch'], 'services/{id}', [ServiceController::class, 'update'])->whereNumber('id');
         Route::delete('services/{id}',        [ServiceController::class, 'destroy'])->whereNumber('id');
+        Route::patch('/services/{service}/deactivate', [ServiceController::class, 'deactivate']);
+        Route::patch('/services/{service}/activate', [ServiceController::class, 'activate']);
         Route::patch('categories/{category}/activate', [ServiceCategoryController::class, 'activate']);
 
         // Appointments admin

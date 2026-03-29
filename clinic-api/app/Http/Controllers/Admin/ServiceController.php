@@ -310,4 +310,25 @@ public function update(ServiceUpdateRequest $request, int $id)
         }
         return $ids;
     }
+
+
+    public function deactivate(Service $service)
+    {
+        $service->update(['is_active' => false]);
+
+        return response()->json([
+            'message' => 'Service deactivated',
+            'service' => $service,
+        ]);
+    }
+
+    public function activate(Service $service)
+    {
+        $service->update(['is_active' => true]);
+
+        return response()->json([
+            'message' => 'Service activated',
+            'service' => $service,
+        ]);
+    }
 }
