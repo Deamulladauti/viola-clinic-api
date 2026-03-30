@@ -16,6 +16,7 @@ class DatabaseSeeder extends Seeder
             TagSeeder::class,
             ServiceTagSeeder::class,
             ServiceStaffSeeder::class,
+            ExpenseCategorySeeder::class,
         ]);
     }
 }

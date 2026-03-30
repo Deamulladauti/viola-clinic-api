@@ -26,6 +26,8 @@ use App\Http\Controllers\Api\V1\StaffServiceController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Admin\AdminClientController;
 use Illuminate\Support\Facades\Hash;
+use App\Http\Controllers\Admin\ExpenseCategoryController;
+use App\Http\Controllers\Admin\ExpenseController;
 
 
 Route::prefix('v1')->group(function () {
@@ -109,6 +111,20 @@ Route::prefix('v1')->group(function () {
         Route::get('appointments/calendar', [AppointmentAdminController::class, 'calendar']);
 
         Route::get('insights', [AdminInsightsController::class, 'index']);
+
+        Route::get('expense-categories', [ExpenseCategoryController::class, 'index']);
+        Route::post('expense-categories', [ExpenseCategoryController::class, 'store']);
+        Route::get('expense-categories/{category}', [ExpenseCategoryController::class, 'show']);
+        Route::patch('expense-categories/{category}', [ExpenseCategoryController::class, 'update']);
+        Route::delete('expense-categories/{category}', [ExpenseCategoryController::class, 'destroy']);
+        Route::patch('expense-categories/{category}/activate', [ExpenseCategoryController::class, 'activate']);
+        Route::patch('expense-categories/{category}/deactivate', [ExpenseCategoryController::class, 'deactivate']);
+
+        Route::get('expenses', [ExpenseController::class, 'index']);
+        Route::post('expenses', [ExpenseController::class, 'store']);
+        Route::get('expenses/{expense}', [ExpenseController::class, 'show']);
+        Route::patch('expenses/{expense}', [ExpenseController::class, 'update']);
+        Route::delete('expenses/{expense}', [ExpenseController::class, 'destroy']);
        
 
         Route::get('/clients/lookup', [AdminClientController::class, 'lookupByPhone']);
