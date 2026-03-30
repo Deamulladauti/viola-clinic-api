@@ -100,14 +100,13 @@ class ServiceController extends Controller
         return response()->json($query->paginate($perPage));
     }
 
-    // GET /api/admin/services/{service}
-   public function show(Service $service)
+   public function show($id)
     {
-        $service->load([
+        $service = Service::with([
             'category:id,name,slug',
             'tags:id,name,slug',
-            'staff:id,name,email'
-        ]);
+            'staff:id,name,email',
+        ])->findOrFail($id);
 
         return response()->json([
             'id' => $service->id,
