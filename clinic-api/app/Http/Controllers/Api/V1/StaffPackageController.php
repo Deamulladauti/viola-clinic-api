@@ -443,6 +443,8 @@ class StaffPackageController extends Controller
             PackageLog::create([
                 'service_package_id' => $package->id,
                 'staff_id'           => $staff->id,
+                'used_sessions'      => 0,
+                'used_minutes'       => 0,
                 'used_at'            => now(),
                 'note'               => 'Solarium package created by staff',
             ]);
