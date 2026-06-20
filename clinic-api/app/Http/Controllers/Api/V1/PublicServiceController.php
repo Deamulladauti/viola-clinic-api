@@ -28,7 +28,7 @@ class PublicServiceController extends Controller
         $sort         = $request->query('sort', 'newest');    // newest|oldest|price_asc|price_desc|duration_asc|duration_desc|popular|name_asc|name_desc
         $bookable     = $request->query('bookable');          // '1'|'0'|null
         $active       = $request->query('active', '1');       // default active only
-        $perPage      = (int) $request->query('per_page', 12);
+        $perPage      = (int) $request->query('per_page', 50);
         $perPage      = max(1, min(50, $perPage));
 
         // Base query (public-facing → guard visibility by default)
