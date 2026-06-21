@@ -123,7 +123,7 @@ class PublicCategoryController extends Controller
         $minDuration  = $request->query('min_duration');
         $maxDuration  = $request->query('max_duration');
         $sort         = $request->query('sort', 'newest'); // newest|price_asc|price_desc|duration_asc|duration_desc|popular|name_asc|name_desc
-        $perPage      = (int) $request->query('per_page', 12);
+        $perPage      = (int) $request->query('per_page', 50);
         $perPage      = max(1, min(50, $perPage));
 
         // Build query (ACTIVE services only for public)
