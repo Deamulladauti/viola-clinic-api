@@ -15,7 +15,7 @@ class ServiceCategoryController extends Controller
     // GET /api/admin/categories
     public function index(Request $request)
     {
-        $perPage = (int) $request->integer('per_page', 20);
+        $perPage = (int) $request->integer('per_page',30);
         $perPage = max(1, min(100, $perPage));
 
         $query = ServiceCategory::query();

@@ -18,7 +18,7 @@ class ServiceController extends Controller
     // GET /api/admin/services
     public function index(Request $request)
     {
-        $perPage  = min(max((int) $request->input('per_page', 12), 1), 50);
+        $perPage  = min(max((int) $request->input('per_page', 50), 1), 50);
         $q        = trim((string) $request->input('q', ''));
         $catIn    = $request->input('category'); // id or slug
         $isActive = $request->has('is_active')   ? $request->boolean('is_active')   : null;
