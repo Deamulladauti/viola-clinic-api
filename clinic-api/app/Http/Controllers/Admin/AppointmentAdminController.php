@@ -188,6 +188,142 @@ class AppointmentAdminController extends Controller
         ]);
     }
 
+    public function clientAppointments(Request $request, int $client)
+    {
+        $request->validate([
+            'status'   => ['nullable'],
+            'from'     => ['nullable', 'date_format:Y-m-d'],
+            'to'       => ['nullable', 'date_format:Y-m-d', 'after_or_equal:from'],
+            'sort'     => ['nullable', 'in:newest,oldest,upcoming'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $q = Appointment::query()
+            ->with([
+                'service.category',
+                'staff',
+                'user',
+                'package',
+            ])
+            ->where('user_id', $client);
+
+        if ($request->filled('status')) {
+            $statuses = is_array($request->input('status'))
+                ? $request->input('status')
+                : array_values(array_filter(array_map('trim', explode(',', (string) $request->input('status')))));
+
+            if (!empty($statuses)) {
+                $q->whereIn('status', $statuses);
+            }
+        }
+
+        if ($request->filled('from')) {
+            $q->whereDate('date', '>=', $request->input('from'));
+        }
+
+        if ($request->filled('to')) {
+            $q->whereDate('date', '<=', $request->input('to'));
+        }
+
+        $sort = $request->input('sort', 'newest');
+
+        if ($sort === 'oldest' || $sort === 'upcoming') {
+            $q->orderBy('date', 'asc')
+                ->orderBy('starts_at', 'asc')
+                ->orderBy('id', 'asc');
+        } else {
+            $q->orderByDesc('date')
+                ->orderByDesc('starts_at')
+                ->orderByDesc('id');
+        }
+
+        $perPage = min(100, (int) $request->input('per_page', 50));
+        $items = $q->paginate($perPage);
+
+        $data = collect($items->items())->map(function (Appointment $a) {
+            $service  = $a->service;
+            $category = $service?->category;
+            $staff    = $a->staff;
+            $user     = $a->user;
+            $package  = $a->package;
+
+            $dateStr = $a->date instanceof Carbon
+                ? $a->date->toDateString()
+                : Carbon::parse($a->date)->toDateString();
+
+            $startsAt = (string) $a->starts_at;
+            $startsAt = strlen($startsAt) >= 5 ? substr($startsAt, 0, 5) : $startsAt;
+
+            return [
+                'id'             => $a->id,
+                'reference_code' => $a->reference_code,
+                'status'         => $a->status,
+
+                'date'             => $dateStr,
+                'starts_at'        => $startsAt,
+                'duration_minutes' => (int) ($a->duration_minutes ?? $service?->duration_minutes ?? 0),
+
+                'price'       => (float) ($a->price ?? 0),
+                'notes'       => $a->notes,
+                'admin_notes' => $a->admin_notes,
+
+                'coverage' => [
+                    'type' => $package ? 'package' : 'single',
+                    'label' => $package ? 'Covered by package' : 'Single treatment',
+                ],
+
+                'customer' => [
+                    'id'    => $user?->id,
+                    'name'  => $a->customer_name ?? $user?->name,
+                    'email' => $a->customer_email ?? $user?->email,
+                    'phone' => $a->customer_phone ?? $user?->phone,
+                ],
+
+                'service' => $service ? [
+                    'id'       => $service->id,
+                    'name'     => $service->name,
+                    'category' => $category ? [
+                        'id'   => $category->id,
+                        'name' => $category->name,
+                        'slug' => $category->slug ?? null,
+                    ] : null,
+                ] : null,
+
+                'staff' => $staff ? [
+                    'id'    => $staff->id,
+                    'name'  => $staff->name,
+                    'email' => $staff->email,
+                    'phone' => $staff->phone,
+                ] : null,
+
+                'package' => $package ? [
+                    'id'                 => $package->id,
+                    'service_id'         => $package->service_id,
+                    'service_name'       => $package->service_name,
+                    'status'             => $package->status,
+                    'remaining_sessions' => $package->remaining_sessions,
+                    'remaining_minutes'  => $package->remaining_minutes,
+                    'price_total'        => $package->price_total !== null ? (float) $package->price_total : null,
+                    'amount_paid'        => (float) ($package->amount_paid ?? 0),
+                    'remaining_balance'  => (float) ($package->remaining_balance ?? 0),
+                ] : null,
+
+                'created_at' => $a->created_at?->toIso8601String(),
+                'updated_at' => $a->updated_at?->toIso8601String(),
+            ];
+        })->values();
+
+        return response()->json([
+            'data' => $data,
+            'meta' => [
+                'current_page' => $items->currentPage(),
+                'per_page'     => $items->perPage(),
+                'total'        => $items->total(),
+                'last_page'    => $items->lastPage(),
+            ],
+        ]);
+    }
+
 
     // 5) Admin create
     public function store(AppointmentStoreRequest $request)
