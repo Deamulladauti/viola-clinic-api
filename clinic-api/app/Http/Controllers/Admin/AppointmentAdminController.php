@@ -16,6 +16,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use App\Models\User;
 
 class AppointmentAdminController extends Controller
 {
@@ -473,6 +474,102 @@ class AppointmentAdminController extends Controller
                 abort(422, 'Time slot overlaps an existing appointment.');
             }
         }
+    }
+
+    public function storeClientManualAppointment(Request $request, int $client)
+    {
+        $data = $request->validate([
+            'service_id'         => ['required', 'integer', 'exists:services,id'],
+            'service_package_id' => ['nullable', 'integer', 'exists:service_packages,id'],
+            'staff_id'           => ['nullable', 'integer', 'exists:users,id'],
+
+            'date'               => ['required', 'date_format:Y-m-d'],
+            'starts_at'          => ['nullable', 'date_format:H:i'],
+            'duration_minutes'   => ['nullable', 'integer', 'min:1', 'max:1440'],
+
+            'status'             => ['nullable', 'in:pending,confirmed,completed,cancelled,no_show,no-show'],
+            'price'              => ['nullable', 'numeric', 'min:0'],
+            'payment_status'     => ['nullable', 'in:paid,partial,unpaid,covered'],
+
+            'notes'              => ['nullable', 'string', 'max:10000'],
+            'source'             => ['nullable', 'string', 'max:50'],
+        ]);
+
+        $user = User::findOrFail($client);
+        $service = Service::findOrFail((int) $data['service_id']);
+
+        $status = $data['status'] ?? 'completed';
+        $status = $status === 'no-show' ? 'no_show' : $status;
+
+        $startsAt = $data['starts_at'] ?? '00:00';
+        $startsAt = strlen($startsAt) === 5 ? $startsAt . ':00' : $startsAt;
+
+        $payload = [
+            'user_id'          => $user->id,
+            'service_id'       => $service->id,
+            'staff_id'         => $data['staff_id'] ?? null,
+            'date'             => Carbon::parse($data['date'])->toDateString(),
+            'starts_at'        => $startsAt,
+            'duration_minutes' => (int) ($data['duration_minutes'] ?? $service->duration_minutes ?? 60),
+            'price'            => (float) ($data['price'] ?? $service->price ?? 0),
+            'status'           => $status,
+            'reference_code'   => $this->newReferenceCode(),
+            'notes'            => $data['notes'] ?? null,
+        ];
+
+        if (Schema::hasColumn('appointments', 'customer_name')) {
+            $payload['customer_name'] = $user->name;
+        }
+
+        if (Schema::hasColumn('appointments', 'customer_email')) {
+            $payload['customer_email'] = $user->email;
+        }
+
+        if (Schema::hasColumn('appointments', 'customer_phone')) {
+            $payload['customer_phone'] = $user->phone;
+        }
+
+        if (
+            !empty($data['service_package_id']) &&
+            Schema::hasColumn('appointments', 'service_package_id')
+        ) {
+            $payload['service_package_id'] = (int) $data['service_package_id'];
+        }
+
+        if (Schema::hasColumn('appointments', 'payment_status')) {
+            $payload['payment_status'] = $data['payment_status'] ?? null;
+        }
+
+        if (Schema::hasColumn('appointments', 'source')) {
+            $payload['source'] = $data['source'] ?? 'manual_import';
+        }
+
+        if (Schema::hasColumn('appointments', 'admin_notes')) {
+            $payload['admin_notes'] = $data['notes'] ?? null;
+        }
+
+        $appointment = Appointment::create($payload)->load([
+            'service.category',
+            'staff',
+            'user',
+            'package',
+        ]);
+
+        AppointmentLog::create([
+            'appointment_id' => $appointment->id,
+            'user_id'        => optional($request->user())->id,
+            'action'         => 'manual_import_created',
+            'details'        => 'Admin added a manual imported client visit.',
+            'meta'           => [
+                'source'         => $data['source'] ?? 'manual_import',
+                'payment_status' => $data['payment_status'] ?? null,
+            ],
+        ]);
+
+        return response()->json([
+            'message' => 'Manual visit added',
+            'data'    => $appointment,
+        ], 201);
     }
 
      
