@@ -575,17 +575,23 @@ class AppointmentAdminController extends Controller
             'package',
         ]);
 
-        AppointmentLog::create([
+        $logPayload = [
             'appointment_id' => $appointment->id,
             'user_id'        => optional($request->user())->id,
             'action'         => 'manual_import_created',
-            'details'        => 'Admin added a manual imported client visit.',
             'meta'           => [
                 'source'             => $data['source'] ?? 'manual_import',
                 'payment_status'     => $data['payment_status'] ?? null,
                 'service_package_id' => $package?->id,
+                'message'            => 'Admin added a manual imported client visit.',
             ],
-        ]);
+        ];
+
+        if (Schema::hasColumn('appointment_logs', 'details')) {
+            $logPayload['details'] = 'Admin added a manual imported client visit.';
+        }
+
+        AppointmentLog::create($logPayload);
 
         return response()->json([
             'message' => 'Manual visit added',
