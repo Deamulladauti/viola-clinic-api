@@ -489,7 +489,7 @@ class AppointmentAdminController extends Controller
 
             'status'             => ['nullable', 'in:pending,confirmed,completed,cancelled,no_show,no-show'],
             'price'              => ['nullable', 'numeric', 'min:0'],
-            'payment_status'     => ['nullable', 'in:paid,partial,unpaid,covered'],
+            'payment_status'     => ['nullable', 'in:paid,partial,unpaid'],
 
             'notes'              => ['nullable', 'string', 'max:10000'],
             'source'             => ['nullable', 'string', 'max:50'],
@@ -497,6 +497,21 @@ class AppointmentAdminController extends Controller
 
         $user = User::findOrFail($client);
         $service = Service::findOrFail((int) $data['service_id']);
+
+        $package = null;
+
+        if (!empty($data['service_package_id'])) {
+            $package = ServicePackage::query()
+                ->where('id', (int) $data['service_package_id'])
+                ->where('user_id', $user->id)
+                ->first();
+
+            if (!$package) {
+                return response()->json([
+                    'message' => 'The selected package does not belong to this client.',
+                ], 422);
+            }
+        }
 
         $status = $data['status'] ?? 'completed';
         $status = $status === 'no-show' ? 'no_show' : $status;
@@ -510,7 +525,11 @@ class AppointmentAdminController extends Controller
             'staff_id'         => $data['staff_id'] ?? null,
             'date'             => Carbon::parse($data['date'])->toDateString(),
             'starts_at'        => $startsAt,
-            'duration_minutes' => (int) ($data['duration_minutes'] ?? $service->duration_minutes ?? 60),
+
+            // Admin should not need to enter this.
+            // It comes from the selected service.
+            'duration_minutes' => (int) ($service->duration_minutes ?? 60),
+
             'price'            => (float) ($data['price'] ?? $service->price ?? 0),
             'status'           => $status,
             'reference_code'   => $this->newReferenceCode(),
@@ -529,11 +548,8 @@ class AppointmentAdminController extends Controller
             $payload['customer_phone'] = $user->phone;
         }
 
-        if (
-            !empty($data['service_package_id']) &&
-            Schema::hasColumn('appointments', 'service_package_id')
-        ) {
-            $payload['service_package_id'] = (int) $data['service_package_id'];
+        if ($package && Schema::hasColumn('appointments', 'service_package_id')) {
+            $payload['service_package_id'] = $package->id;
         }
 
         if (Schema::hasColumn('appointments', 'payment_status')) {
@@ -548,7 +564,11 @@ class AppointmentAdminController extends Controller
             $payload['admin_notes'] = $data['notes'] ?? null;
         }
 
-        $appointment = Appointment::create($payload)->load([
+        $appointment = new Appointment();
+        $appointment->forceFill($payload);
+        $appointment->save();
+
+        $appointment->load([
             'service.category',
             'staff',
             'user',
@@ -561,8 +581,9 @@ class AppointmentAdminController extends Controller
             'action'         => 'manual_import_created',
             'details'        => 'Admin added a manual imported client visit.',
             'meta'           => [
-                'source'         => $data['source'] ?? 'manual_import',
-                'payment_status' => $data['payment_status'] ?? null,
+                'source'             => $data['source'] ?? 'manual_import',
+                'payment_status'     => $data['payment_status'] ?? null,
+                'service_package_id' => $package?->id,
             ],
         ]);
 
@@ -571,7 +592,6 @@ class AppointmentAdminController extends Controller
             'data'    => $appointment,
         ], 201);
     }
-
      
     public function showBooking(Request $request, Appointment $appointment)
     {
@@ -620,7 +640,7 @@ class AppointmentAdminController extends Controller
                 : \Illuminate\Support\Carbon::parse($appointment->date)->toDateString(),
 
             'starts_at'        => (string) $appointment->starts_at,
-            'duration_minutes' => (int) ($appointment->duration_minutes ?? $service?->duration_minutes ?? 0),
+            'duration_minutes' => (int) ($data['duration_minutes'] ?? $service->duration_minutes ?? 60),
 
             // 💰 Prices on this booking
             'price'           => $appointmentPrice,
