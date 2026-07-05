@@ -137,11 +137,11 @@ Route::prefix('v1')->group(function () {
 
         Route::get('/clients/{id}', [AdminClientController::class, 'show']);
 
-        Route::get('/admin/clients/{client}/notes', [ClientNoteController::class, 'index']);
-        Route::post('/admin/clients/{client}/notes', [ClientNoteController::class, 'store']);
-        Route::delete('/admin/clients/{client}/notes/{note}', [ClientNoteController::class, 'destroy']);
+        Route::get('/clients/{client}/notes', [ClientNoteController::class, 'index']);
+        Route::post('/clients/{client}/notes', [ClientNoteController::class, 'store']);
+        Route::delete('/clients/{client}/notes/{note}', [ClientNoteController::class, 'destroy']);
 
-        Route::post('/admin/appointments/{appointment}/notes', [ClientNoteController::class, 'storeForAppointment']);
+        Route::post('/appointments/{appointment}/notes', [ClientNoteController::class, 'storeForAppointment']);
 
 
         // NEW
@@ -254,7 +254,7 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
 
     Route::get('clients/{client}/packages', [StaffPackageController::class, 'forClient'])->whereNumber('client');
     Route::get('packages/{package}/logs', [StaffPackageController::class, 'logs'])->whereNumber('package');
-    Route::post('/staff/appointments/{appointment}/notes', [ClientNoteController::class, 'storeForAppointment']);
+    Route::post('appointments/{appointment}/notes', [ClientNoteController::class, 'storeForAppointment']);
 
 
 
