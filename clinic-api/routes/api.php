@@ -28,6 +28,7 @@ use App\Http\Controllers\Admin\AdminClientController;
 use Illuminate\Support\Facades\Hash;
 use App\Http\Controllers\Admin\ExpenseCategoryController;
 use App\Http\Controllers\Admin\ExpenseController;
+use App\Http\Controllers\Api\V1\ClientNoteController;
 
 
 Route::prefix('v1')->group(function () {
@@ -135,6 +136,12 @@ Route::prefix('v1')->group(function () {
         Route::post('/clients/{client}/appointments/manual', [AppointmentAdminController::class, 'storeClientManualAppointment'])->whereNumber('client');
 
         Route::get('/clients/{id}', [AdminClientController::class, 'show']);
+
+        Route::get('/admin/clients/{client}/notes', [ClientNoteController::class, 'index']);
+        Route::post('/admin/clients/{client}/notes', [ClientNoteController::class, 'store']);
+        Route::delete('/admin/clients/{client}/notes/{note}', [ClientNoteController::class, 'destroy']);
+
+        Route::post('/admin/appointments/{appointment}/notes', [ClientNoteController::class, 'storeForAppointment']);
 
 
         // NEW
@@ -247,6 +254,7 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
 
     Route::get('clients/{client}/packages', [StaffPackageController::class, 'forClient'])->whereNumber('client');
     Route::get('packages/{package}/logs', [StaffPackageController::class, 'logs'])->whereNumber('package');
+    Route::post('/staff/appointments/{appointment}/notes', [ClientNoteController::class, 'storeForAppointment']);
 
 
 
