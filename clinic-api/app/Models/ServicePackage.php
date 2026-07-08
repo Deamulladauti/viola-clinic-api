@@ -14,14 +14,16 @@ class ServicePackage extends Model
     public const STATUS_EXPIRED   = 'expired';
     public const STATUS_CANCELLED = 'cancelled';
 
+    public const EUR_TO_MKD = 61.6;
+
     protected $fillable = [
         'user_id',
         'service_id',
         'service_name',
         'snapshot_total_sessions',
         'snapshot_total_minutes',
-        'price_paid',      // legacy / historical
-        'price_total',     // ✅ new: full package price
+        'price_paid',
+        'price_total',
         'currency',
         'remaining_sessions',
         'remaining_minutes',
@@ -33,7 +35,7 @@ class ServicePackage extends Model
 
     protected $casts = [
         'price_paid'              => 'decimal:2',
-        'price_total'             => 'decimal:2', // ✅
+        'price_total'             => 'decimal:2',
         'remaining_sessions'      => 'integer',
         'remaining_minutes'       => 'integer',
         'snapshot_total_sessions' => 'integer',
@@ -42,7 +44,15 @@ class ServicePackage extends Model
         'expires_on'              => 'date',
     ];
 
+    protected $appends = [
+        'amount_paid',
+        'amount_paid_mkd',
+        'remaining_to_pay',
+        'remaining_to_pay_mkd',
+    ];
+
     // ───── RELATIONSHIPS ─────
+
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
@@ -69,6 +79,7 @@ class ServicePackage extends Model
     }
 
     // ───── SCOPES ─────
+
     public function scopeActive($q)
     {
         return $q->where('status', self::STATUS_ACTIVE);
@@ -80,6 +91,7 @@ class ServicePackage extends Model
     }
 
     // ───── HELPERS ─────
+
     public function isSessionsType(): bool
     {
         return !is_null($this->remaining_sessions) && is_null($this->remaining_minutes);
@@ -90,12 +102,6 @@ class ServicePackage extends Model
         return !is_null($this->remaining_minutes) && is_null($this->remaining_sessions);
     }
 
-    /**
-     * Exhausted logic:
-     * - For session packages → exhausted when remaining_sessions <= 0.
-     * - For minutes packages (Solarium) → NEVER auto-exhaust based on minutes,
-     *   so staff can keep logging usage even if it goes below 0 (we will just WARN in UI).
-     */
     public function isExhausted(): bool
     {
         if ($this->isSessionsType()) {
@@ -103,7 +109,6 @@ class ServicePackage extends Model
         }
 
         if ($this->isMinutesType()) {
-            // For solarium: do not automatically mark as exhausted.
             return false;
         }
 
@@ -120,11 +125,6 @@ class ServicePackage extends Model
 
     // ───── DEDUCTIONS ─────
 
-    /**
-     * Deduct N sessions (Laser package).
-     * - Strict: cannot go below 0.
-     * - Only active packages allowed.
-     */
     public function deductSessions(
         int $count = 1,
         ?int $staffId = null,
@@ -136,9 +136,11 @@ class ServicePackage extends Model
         if ($count <= 0) {
             throw new \InvalidArgumentException('used sessions must be > 0');
         }
+
         if (!$this->isSessionsType()) {
             throw new \LogicException('This package tracks minutes, not sessions.');
         }
+
         if ($this->status !== self::STATUS_ACTIVE) {
             throw new \LogicException('Package is not active.');
         }
@@ -164,17 +166,11 @@ class ServicePackage extends Model
             ]);
 
             $this->markExhaustedIfNeeded();
+
             return $this;
         });
     }
 
-    /**
-     * Deduct X minutes (Solarium).
-     *
-     * Rules from clinic:
-     * - Staff must ALWAYS be able to record usage.
-     * - Allowed to go below 0 minutes; system will later WARN but never block.
-     */
     public function deductMinutes(
         int $minutes,
         ?int $staffId = null,
@@ -186,18 +182,14 @@ class ServicePackage extends Model
         if ($minutes <= 0) {
             throw new \InvalidArgumentException('used minutes must be > 0');
         }
+
         if (!$this->isMinutesType()) {
             throw new \LogicException('This package tracks sessions, not minutes.');
         }
 
-        // ⚠ We do NOT block based on status or remaining minutes.
-        // Staff can still log usage even if balance is negative or status not ideal.
-        // UI / API layer will show warnings if remaining_minutes < 0 or status not active.
-
         return \DB::transaction(function () use ($minutes, $staffId, $note, $when, $appointmentId, $appointmentRef) {
             $this->refresh();
 
-            // Allow going below zero
             $this->remaining_minutes = ($this->remaining_minutes ?? 0) - $minutes;
             $this->save();
 
@@ -211,8 +203,6 @@ class ServicePackage extends Model
                 'note'            => $note,
             ]);
 
-            // markExhaustedIfNeeded() won't flip minutes-type packages anymore,
-            // because isExhausted() returns false for minutes.
             $this->markExhaustedIfNeeded();
 
             return $this;
@@ -220,32 +210,83 @@ class ServicePackage extends Model
     }
 
     // ───── PAYMENTS ─────
-    protected $appends = ['amount_paid', 'remaining_to_pay'];
 
     public function getAmountPaidAttribute(): float
     {
-        // sum of all non-voided payments
-        return (float) $this->payments()->notVoided()->sum('amount');
+        return round($this->convertMkdToPackageCurrency($this->amount_paid_mkd), 2);
+    }
+
+    public function getAmountPaidMkdAttribute(): float
+    {
+        return round(
+            $this->payments()
+                ->notVoided()
+                ->get()
+                ->sum(fn (PackagePayment $payment) => $this->paymentAmountToMkd($payment)),
+            2
+        );
     }
 
     public function getRemainingToPayAttribute(): float
     {
-        // Prefer price_total; fall back to legacy price_paid
-        $total = (float) ($this->price_total ?? $this->price_paid ?? 0);
-
-        return max($total - $this->amount_paid, 0.0);
+        return round($this->convertMkdToPackageCurrency($this->remaining_to_pay_mkd), 2);
     }
 
-    public function assertOwnershipForAppointment(\App\Models\Appointment $appointment): void
+    public function getRemainingToPayMkdAttribute(): float
+    {
+        return round(max($this->priceTotalMkd() - $this->amount_paid_mkd, 0), 2);
+    }
+
+    public function priceTotalMkd(): float
+    {
+        $total = (float) ($this->price_total ?? $this->price_paid ?? 0);
+
+        if ($this->packageCurrency() === 'EUR') {
+            return round($total * self::EUR_TO_MKD, 2);
+        }
+
+        return round($total, 2);
+    }
+
+    public function packageCurrency(): string
+    {
+        return strtoupper($this->currency ?: 'EUR');
+    }
+
+    public function paymentAmountToMkd(PackagePayment $payment): float
+    {
+        if ($payment->amount_mkd !== null) {
+            return (float) $payment->amount_mkd;
+        }
+
+        $amount = (float) $payment->amount;
+        $currency = strtoupper($payment->currency ?: $this->packageCurrency());
+
+        if ($currency === 'EUR') {
+            $rate = (float) ($payment->exchange_rate ?: self::EUR_TO_MKD);
+
+            return round($amount * $rate, 2);
+        }
+
+        return round($amount, 2);
+    }
+
+    public function convertMkdToPackageCurrency(float $amountMkd): float
+    {
+        if ($this->packageCurrency() === 'EUR') {
+            return $amountMkd / self::EUR_TO_MKD;
+        }
+
+        return $amountMkd;
+    }
+
+    public function assertOwnershipForAppointment(Appointment $appointment): void
     {
         if ($appointment->user_id && $appointment->user_id !== $this->user_id) {
             throw new \LogicException('Ownership mismatch: appointment does not belong to package owner.');
         }
     }
 
-    /**
-     * Restore previously deducted sessions/minutes for a specific appointment.
-     */
     public function restorePackageDeduction(
         ?int $appointmentId = null,
         ?string $appointmentRef = null,
@@ -258,25 +299,24 @@ class ServicePackage extends Model
         return \DB::transaction(function () use ($appointmentId, $appointmentRef, $note) {
             $this->refresh();
 
-            // Only match real deductions (sessions/minutes > 0)
             $log = $this->logs()
                 ->where(function ($q) use ($appointmentId, $appointmentRef) {
                     if ($appointmentId) {
                         $q->where('appointment_id', $appointmentId);
                     }
+
                     if ($appointmentRef) {
                         $q->orWhere('appointment_ref', $appointmentRef);
                     }
                 })
                 ->where(function ($q) {
                     $q->where('used_sessions', '>', 0)
-                      ->orWhere('used_minutes', '>', 0);
+                        ->orWhere('used_minutes', '>', 0);
                 })
                 ->orderByDesc('id')
                 ->first();
 
             if (!$log) {
-                // idempotent: nothing to restore
                 return $this;
             }
 

@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use App\Models\Appointment;
 use App\Models\ServicePackage;
+use App\Models\PackagePayment;
 use App\Models\AppointmentLog;
 use App\Models\Staff;
 use App\Models\Service;
@@ -46,7 +47,7 @@ class StaffAppointmentController extends Controller
         abort_if(!$staff, 403, 'Not a staff member');
 
         $q = Appointment::query()
-            ->with(['service:id,name,slug,duration_minutes', 'client:id,name,email,phone'])
+            ->with(['service:id,name,slug,duration_minutes', 'client:id,name,email,phone', 'package'])
             ->where('staff_id', $staff->id);
 
         // date filters
@@ -285,7 +286,7 @@ class StaffAppointmentController extends Controller
             : (clone $from)->addDays(6)->endOfDay();
 
         $appointments = Appointment::query()
-            ->with(['service:id,name,slug,duration_minutes', 'client:id,name,email,phone'])
+            ->with(['service:id,name,slug,duration_minutes', 'client:id,name,email,phone', 'package'])
             ->where('staff_id', $staff->id)
             ->whereBetween('date', [$from->toDateString(), $to->toDateString()])
             ->orderBy('date')
@@ -325,7 +326,7 @@ class StaffAppointmentController extends Controller
         $today = Carbon::today()->toDateString();
 
         $appointments = Appointment::query()
-            ->with(['service:id,name,slug,duration_minutes', 'client:id,name,email,phone'])
+            ->with(['service:id,name,slug,duration_minutes', 'client:id,name,email,phone', 'package'])
             ->where('staff_id', $staff->id)
             ->whereDate('date', $today)
             ->orderBy('starts_at')
@@ -684,36 +685,30 @@ class StaffAppointmentController extends Controller
             // ignore, $end stays null
         }
 
-        // -------- 💰 Price calculations (clean model) --------
-        $appointmentPrice = (float) ($a->price ?? 0.0);
-
-        $package  = $a->package;
-        $pkgTotal = $package?->price_total;
-        $pkgPaid  = $package?->amount_paid ?? 0.0;
-
-        if ($package && $pkgTotal !== null) {
-            $totalPrice     = (float) $pkgTotal;
-            $remainingPrice = max(0, (float)$pkgTotal - (float)$pkgPaid);
-        } else {
-            $totalPrice     = $appointmentPrice;
-            $remainingPrice = null;
-        }
+        $payment = $this->paymentSummaryForAppointment($a);
+        $package = $a->package;
 
         return [
             'id'       => $a->id,
             'status'   => $a->status,
 
-            // 💰 For staff UI header
-            'price'           => $appointmentPrice,
-            'total_price'     => $totalPrice,
-            'remaining_price' => $remainingPrice,
+            // Backwards-compatible fields for existing staff UI
+            'price'                    => (float) ($a->price ?? 0),
+            'total_price'              => $payment['total_amount'],
+            'remaining_price'          => $payment['required_amount'],
+            'amount_paid'              => $payment['paid_amount'],
+            'amount_paid_mkd'          => $payment['paid_amount_mkd'],
+            'required_from_client'     => $payment['required_amount'],
+            'required_from_client_mkd' => $payment['required_amount_mkd'],
+            'payment_status'           => $payment['status'],
+            'payment_required'         => $payment,
 
             'service'  => [
                 'id'    => $a->service?->id,
                 'name'  => $a->service?->name,
                 'slug'  => $a->service?->slug,
                 // what this appointment is billed at
-                'price' => (float) $a->price,
+                'price' => (float) ($a->price ?? 0),
             ],
 
             'client'   => $a->client ? [
@@ -733,19 +728,143 @@ class StaffAppointmentController extends Controller
             'duration'  => (int) $a->duration_minutes,
 
             'package'   => $package ? [
-                'id'                 => $package->id,
-                'remaining_sessions' => $package->remaining_sessions,
-                'remaining_minutes'  => $package->remaining_minutes,
-                'status'             => $package->status,
+                'id'                    => $package->id,
+                'remaining_sessions'    => $package->remaining_sessions,
+                'remaining_minutes'     => $package->remaining_minutes,
+                'status'                => $package->status,
 
-                // 🔥 clean money model here
-                'price_total'        => (float) $pkgTotal,
-                'amount_paid'        => (float) $pkgPaid,
-                'remaining_balance'  => $remainingPrice,
+                'price_total'           => (float) ($package->price_total ?? 0),
+                'amount_paid'           => (float) $package->amount_paid,
+                'remaining_balance'     => (float) $package->remaining_to_pay,
+
+                'price_total_mkd'       => (float) $package->priceTotalMkd(),
+                'amount_paid_mkd'       => (float) $package->amount_paid_mkd,
+                'remaining_balance_mkd' => (float) $package->remaining_to_pay_mkd,
+                'currency'              => $package->packageCurrency(),
             ] : null,
 
             'notes' => $a->notes,
         ];
+    }
+
+    private function paymentSummaryForAppointment(Appointment $a): array
+    {
+        /*
+         * Staff needs to know what to ask from the client:
+         * - Single appointment: appointment price minus appointment payments.
+         * - Package appointment: unpaid balance of the linked package.
+         */
+        $package = $a->package;
+
+        if ($package) {
+            $required = (float) $package->remaining_to_pay;
+            $requiredMkd = (float) $package->remaining_to_pay_mkd;
+            $paid = (float) $package->amount_paid;
+            $paidMkd = (float) $package->amount_paid_mkd;
+            $total = (float) ($package->price_total ?? $package->price_paid ?? 0);
+            $totalMkd = (float) $package->priceTotalMkd();
+
+            return [
+                'type'                => 'package',
+                'label'               => 'Package balance',
+                'currency'            => $package->packageCurrency(),
+                'total_amount'        => $total,
+                'total_amount_mkd'    => $totalMkd,
+                'paid_amount'         => $paid,
+                'paid_amount_mkd'     => $paidMkd,
+                'required_amount'     => $required,
+                'required_amount_mkd' => $requiredMkd,
+                'status'              => $this->paymentStatus($totalMkd, $paidMkd, $requiredMkd),
+                'package_id'          => $package->id,
+                'appointment_id'      => $a->id,
+            ];
+        }
+
+        $currency = $this->appointmentCurrency($a);
+        $total = round((float) ($a->price ?? 0), 2);
+        $totalMkd = $this->amountToMkd($total, $currency);
+        $paidMkd = $this->appointmentPaidMkd($a);
+        $requiredMkd = round(max($totalMkd - $paidMkd, 0), 2);
+        $paid = $this->convertMkdToCurrency($paidMkd, $currency);
+        $required = $this->convertMkdToCurrency($requiredMkd, $currency);
+
+        return [
+            'type'                => 'single',
+            'label'               => 'Single appointment',
+            'currency'            => $currency,
+            'total_amount'        => $total,
+            'total_amount_mkd'    => $totalMkd,
+            'paid_amount'         => $paid,
+            'paid_amount_mkd'     => $paidMkd,
+            'required_amount'     => $required,
+            'required_amount_mkd' => $requiredMkd,
+            'status'              => $this->paymentStatus($totalMkd, $paidMkd, $requiredMkd),
+            'package_id'          => null,
+            'appointment_id'      => $a->id,
+        ];
+    }
+
+    private function appointmentCurrency(Appointment $a): string
+    {
+        $currency = strtoupper((string) ($a->currency ?? 'EUR'));
+
+        return in_array($currency, ['EUR', 'MKD'], true) ? $currency : 'EUR';
+    }
+
+    private function appointmentPaidMkd(Appointment $a): float
+    {
+        return round(
+            PackagePayment::query()
+                ->notVoided()
+                ->where('appointment_id', $a->id)
+                ->whereNull('service_package_id')
+                ->get()
+                ->sum(fn (PackagePayment $payment) => $this->paymentAmountToMkd($payment, $this->appointmentCurrency($a))),
+            2
+        );
+    }
+
+    private function paymentAmountToMkd(PackagePayment $payment, string $fallbackCurrency = 'EUR'): float
+    {
+        if ($payment->amount_mkd !== null) {
+            return round((float) $payment->amount_mkd, 2);
+        }
+
+        $amount = round((float) $payment->amount, 2);
+        $currency = strtoupper((string) ($payment->currency ?: $fallbackCurrency));
+
+        return $this->amountToMkd($amount, $currency);
+    }
+
+    private function amountToMkd(float $amount, string $currency): float
+    {
+        return strtoupper($currency) === 'EUR'
+            ? round($amount * ServicePackage::EUR_TO_MKD, 2)
+            : round($amount, 2);
+    }
+
+    private function convertMkdToCurrency(float $amountMkd, string $currency): float
+    {
+        return strtoupper($currency) === 'EUR'
+            ? round($amountMkd / ServicePackage::EUR_TO_MKD, 2)
+            : round($amountMkd, 2);
+    }
+
+    private function paymentStatus(float $totalMkd, float $paidMkd, float $requiredMkd): string
+    {
+        if ($totalMkd <= 0) {
+            return 'not_required';
+        }
+
+        if ($requiredMkd <= 0.01) {
+            return 'paid';
+        }
+
+        if ($paidMkd > 0) {
+            return 'partial';
+        }
+
+        return 'unpaid';
     }
 
 

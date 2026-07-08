@@ -109,9 +109,20 @@ Route::prefix('v1')->group(function () {
         Route::patch ('appointments/{appointment}/status', [AppointmentAdminController::class, 'updateStatus'])->whereNumber('appointment');
         Route::get('bookings/{appointment}', [AppointmentAdminController::class, 'showBooking']);
         Route::post('appointments/{appointment}/payments', [PaymentController::class, 'storeForAppointment'])->whereNumber('appointment');
+        Route::patch('payments/{payment}/void', [PaymentController::class, 'voidByAdmin'])->whereNumber('payment');
         Route::get('appointments/calendar', [AppointmentAdminController::class, 'calendar']);
 
         Route::get('insights', [AdminInsightsController::class, 'index']);
+
+        Route::get('/clients/{client}/payments', [PaymentController::class, 'listForClient'])
+            ->whereNumber('client');
+
+        Route::post('/clients/{client}/payments', [PaymentController::class, 'storeForClient'])
+            ->whereNumber('client');
+
+        Route::patch('payments/{payment}/void', [PaymentController::class, 'voidByAdmin'])
+            ->whereNumber('payment');
+
 
         Route::get('expense-categories', [ExpenseCategoryController::class, 'index']);
         Route::post('expense-categories', [ExpenseCategoryController::class, 'store']);
@@ -218,6 +229,7 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
     Route::get  ('appointments/agenda',             [StaffAppointmentController::class, 'agenda']);
     Route::get  ('appointments/today',              [StaffAppointmentController::class, 'today']);
     Route::post('appointments/{appointment}/payments', [PaymentController::class, 'storeForAppointment'])->whereNumber('appointment');
+    Route::patch('payments/{payment}/void', [PaymentController::class, 'voidByStaff'])->whereNumber('payment');
 
     Route::get('me', [StaffProfileController::class, 'show']);
     Route::post('appointments', [StaffAppointmentController::class, 'store']);
@@ -255,6 +267,10 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
     Route::get('clients/{client}/packages', [StaffPackageController::class, 'forClient'])->whereNumber('client');
     Route::get('packages/{package}/logs', [StaffPackageController::class, 'logs'])->whereNumber('package');
     Route::post('appointments/{appointment}/notes', [ClientNoteController::class, 'storeForAppointment']);
+
+    Route::patch('payments/{payment}/void', [PaymentController::class, 'voidByStaff'])
+    ->whereNumber('payment');
+
 
 
 

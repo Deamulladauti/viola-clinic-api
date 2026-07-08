@@ -8,6 +8,7 @@ use App\Models\Service;
 use App\Models\ServicePackage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class AdminPackageController extends Controller
 {
@@ -28,7 +29,7 @@ class AdminPackageController extends Controller
 
         if (! $isSessionsType && ! $isMinutesType) {
             return response()->json([
-                'message' => 'Package service must define either total_sessions or total_minutes (exclusively).'
+                'message' => 'Package service must define either total_sessions or total_minutes (exclusively).',
             ], 422);
         }
 
@@ -36,7 +37,7 @@ class AdminPackageController extends Controller
             ? (float) $request->price_total
             : (float) $service->price;
 
-        $currency = $request->string('currency', 'EUR');
+        $currency = strtoupper((string) $request->string('currency', 'EUR'));
 
         $pkg = ServicePackage::create([
             'user_id'                 => $request->integer('user_id'),
@@ -49,6 +50,7 @@ class AdminPackageController extends Controller
             'price_total'             => $priceTotal,
             'currency'                => $currency,
 
+            // legacy field; keep it as package total fallback
             'price_paid'              => $priceTotal,
 
             'remaining_sessions'      => $isSessionsType ? $service->total_sessions : null,
@@ -60,23 +62,23 @@ class AdminPackageController extends Controller
             'notes'                   => $request->string('notes'),
         ]);
 
-        $remaining = max(0, (float) $pkg->price_total - (float) ($pkg->amount_paid ?? 0));
-
         return response()->json([
             'data' => [
-                'id'                 => $pkg->id,
-                'user_id'            => $pkg->user_id,
-                'service_id'         => $pkg->service_id,
-                'service_name'       => $pkg->service_name,
-                'status'             => $pkg->status,
-                'price_total'        => (float) $pkg->price_total,
-                'amount_paid'        => (float) ($pkg->amount_paid ?? 0),
-                'remaining_balance'  => $remaining,
-                'currency'           => $pkg->currency,
-                'remaining_sessions' => $pkg->remaining_sessions,
-                'remaining_minutes'  => $pkg->remaining_minutes,
-                'starts_on'          => optional($pkg->starts_on)?->toDateString(),
-                'expires_on'         => optional($pkg->expires_on)?->toDateString(),
+                'id'                       => $pkg->id,
+                'user_id'                  => $pkg->user_id,
+                'service_id'               => $pkg->service_id,
+                'service_name'             => $pkg->service_name,
+                'status'                   => $pkg->status,
+                'price_total'              => (float) $pkg->price_total,
+                'amount_paid'              => (float) $pkg->amount_paid,
+                'remaining_balance'        => (float) $pkg->remaining_to_pay,
+                'amount_paid_mkd'          => (float) $pkg->amount_paid_mkd,
+                'remaining_balance_mkd'    => (float) $pkg->remaining_to_pay_mkd,
+                'currency'                 => $pkg->currency,
+                'remaining_sessions'       => $pkg->remaining_sessions,
+                'remaining_minutes'        => $pkg->remaining_minutes,
+                'starts_on'                => optional($pkg->starts_on)?->toDateString(),
+                'expires_on'               => optional($pkg->expires_on)?->toDateString(),
             ],
         ], 201);
     }
@@ -118,24 +120,24 @@ class AdminPackageController extends Controller
             ->latest('id')
             ->get()
             ->map(function (ServicePackage $p) {
-                $total     = (float) ($p->price_total ?? 0);
-                $paid      = (float) ($p->amount_paid ?? 0);
-                $remaining = $total > 0 ? max(0, $total - $paid) : null;
+                $total = (float) ($p->price_total ?? 0);
 
                 return [
-                    'id'                 => $p->id,
-                    'user_id'            => $p->user_id,
-                    'service_id'         => $p->service_id,
-                    'service_name'       => $p->service?->name ?? $p->service_name,
-                    'status'             => $p->status,
-                    'remaining_sessions' => $p->remaining_sessions,
-                    'remaining_minutes'  => $p->remaining_minutes,
-                    'price_total'        => $total ?: null,
-                    'amount_paid'        => $paid ?: 0,
-                    'remaining_balance'  => $remaining,
-                    'currency'           => $p->currency,
-                    'starts_on'          => optional($p->starts_on)?->toDateString(),
-                    'expires_on'         => optional($p->expires_on)?->toDateString(),
+                    'id'                       => $p->id,
+                    'user_id'                  => $p->user_id,
+                    'service_id'               => $p->service_id,
+                    'service_name'             => $p->service?->name ?? $p->service_name,
+                    'status'                   => $p->status,
+                    'remaining_sessions'       => $p->remaining_sessions,
+                    'remaining_minutes'        => $p->remaining_minutes,
+                    'price_total'              => $total ?: null,
+                    'amount_paid'              => (float) ($p->amount_paid ?? 0),
+                    'remaining_balance'        => (float) ($p->remaining_to_pay ?? 0),
+                    'amount_paid_mkd'          => (float) ($p->amount_paid_mkd ?? 0),
+                    'remaining_balance_mkd'    => (float) ($p->remaining_to_pay_mkd ?? 0),
+                    'currency'                 => $p->currency,
+                    'starts_on'                => optional($p->starts_on)?->toDateString(),
+                    'expires_on'               => optional($p->expires_on)?->toDateString(),
                 ];
             })
             ->values();
@@ -145,47 +147,64 @@ class AdminPackageController extends Controller
 
     /**
      * POST /api/v1/admin/packages/{package}/payments
+     *
+     * Payment rules:
+     * - card: always MKD, no currency needed from frontend
+     * - cash: currency required, only EUR or MKD
+     * - EUR cash: converted with ServicePackage::EUR_TO_MKD
      */
     public function addPayment(Request $request, ServicePackage $package)
     {
         $admin = $request->user();
 
         $data = $request->validate([
-            'amount'         => ['required', 'numeric', 'min:0.01'],
-            'method'         => ['required', 'in:cash,card,bank,other'],
+            'amount' => ['required', 'numeric', 'min:0.01'],
+            'method' => ['required', Rule::in(['cash', 'card'])],
+            'currency' => [
+                'nullable',
+                'string',
+                'size:3',
+                Rule::requiredIf(fn () => $request->input('method') === 'cash'),
+                Rule::in(['EUR', 'MKD']),
+            ],
             'note'           => ['nullable', 'string', 'max:1000'],
             'appointment_id' => ['nullable', 'integer', 'exists:appointments,id'],
         ]);
 
-        $priceTotal  = (float) ($package->price_total ?? $package->price_paid ?? 0);
-        $alreadyPaid = (float) $package->amount_paid;
-        $remaining   = max(0, $priceTotal - $alreadyPaid);
+        $normalized = $this->normalizePaymentData($data);
 
-        if ($priceTotal <= 0) {
+        $priceTotalMkd = (float) $package->priceTotalMkd();
+        $remainingMkd  = (float) $package->remaining_to_pay_mkd;
+
+        if ($priceTotalMkd <= 0) {
             return response()->json([
                 'ok'      => false,
                 'message' => 'Package has no total price set.',
             ], 422);
         }
 
-        if ($data['amount'] > $remaining + 0.01) {
+        if ($normalized['amount_mkd'] > $remainingMkd + 0.01) {
             return response()->json([
-                'ok'               => false,
-                'message'          => 'Amount exceeds remaining balance.',
-                'remaining_before' => $remaining,
+                'ok'                   => false,
+                'message'              => 'Amount exceeds remaining balance.',
+                'remaining_before'     => (float) $package->remaining_to_pay,
+                'remaining_before_mkd' => $remainingMkd,
+                'package_currency'     => $package->packageCurrency(),
             ], 422);
         }
 
-        DB::transaction(function () use ($package, $data, $admin) {
-            $package->payments()->create([
+        $payment = DB::transaction(function () use ($package, $data, $normalized, $admin) {
+            return $package->payments()->create([
                 'service_package_id' => $package->id,
                 'appointment_id'     => $data['appointment_id'] ?? null,
                 'user_id'            => $package->user_id,
                 'staff_id'           => null,
                 'admin_id'           => $admin->id,
-                'method'             => $data['method'],
-                'amount'             => $data['amount'],
-                'currency'           => $package->currency ?? 'EUR',
+                'method'             => $normalized['method'],
+                'amount'             => round((float) $data['amount'], 2),
+                'currency'           => $normalized['currency'],
+                'exchange_rate'      => $normalized['exchange_rate'],
+                'amount_mkd'         => $normalized['amount_mkd'],
                 'notes'              => $data['note'] ?? null,
             ]);
         });
@@ -193,12 +212,25 @@ class AdminPackageController extends Controller
         $package->refresh();
 
         return response()->json([
-            'ok'                => true,
-            'message'           => 'Payment recorded (admin).',
-            'package_id'        => $package->id,
-            'price_total'       => (float) ($package->price_total ?? 0),
-            'amount_paid'       => (float) $package->amount_paid,
-            'remaining_balance' => (float) $package->remaining_to_pay,
+            'ok'                     => true,
+            'message'                => 'Payment recorded (admin).',
+            'payment'                => [
+                'id'             => $payment->id,
+                'amount'         => (float) $payment->amount,
+                'currency'       => $payment->currency,
+                'method'         => $payment->method,
+                'exchange_rate'  => $payment->exchange_rate !== null ? (float) $payment->exchange_rate : null,
+                'amount_mkd'     => $payment->amount_mkd !== null ? (float) $payment->amount_mkd : null,
+                'notes'          => $payment->notes,
+                'created_at'     => optional($payment->created_at)?->toDateTimeString(),
+            ],
+            'package_id'             => $package->id,
+            'price_total'            => (float) ($package->price_total ?? 0),
+            'amount_paid'            => (float) $package->amount_paid,
+            'remaining_balance'      => (float) $package->remaining_to_pay,
+            'amount_paid_mkd'        => (float) $package->amount_paid_mkd,
+            'remaining_balance_mkd'  => (float) $package->remaining_to_pay_mkd,
+            'currency'               => $package->currency,
         ]);
     }
 
@@ -342,5 +374,38 @@ class AdminPackageController extends Controller
             'used_amount'        => $usedAmount,
             'type'               => $data['type'],
         ]);
+    }
+
+    private function normalizePaymentData(array $data): array
+    {
+        $amount = round((float) $data['amount'], 2);
+        $method = strtolower((string) $data['method']);
+
+        if ($method === 'card') {
+            return [
+                'method'        => 'card',
+                'currency'      => 'MKD',
+                'exchange_rate' => null,
+                'amount_mkd'    => $amount,
+            ];
+        }
+
+        $currency = strtoupper((string) ($data['currency'] ?? 'MKD'));
+
+        if ($currency === 'EUR') {
+            return [
+                'method'        => 'cash',
+                'currency'      => 'EUR',
+                'exchange_rate' => ServicePackage::EUR_TO_MKD,
+                'amount_mkd'    => round($amount * ServicePackage::EUR_TO_MKD, 2),
+            ];
+        }
+
+        return [
+            'method'        => 'cash',
+            'currency'      => 'MKD',
+            'exchange_rate' => null,
+            'amount_mkd'    => $amount,
+        ];
     }
 }
