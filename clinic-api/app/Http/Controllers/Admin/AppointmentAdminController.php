@@ -20,6 +20,21 @@ use App\Models\User;
 
 class AppointmentAdminController extends Controller
 {
+    /**
+     * Clinic working hours are hardcoded because you said they are not stored in DB.
+     * Carbon dayOfWeek: 0 = Sunday, 1 = Monday, ... 6 = Saturday.
+     * Change these times here if the clinic schedule changes.
+     */
+    private const CLINIC_WORKING_HOURS = [
+        0 => null, // Sunday closed
+        1 => ['09:00', '18:00'], // Monday
+        2 => ['09:00', '18:00'], // Tuesday
+        3 => ['09:00', '18:00'], // Wednesday
+        4 => ['09:00', '18:00'], // Thursday
+        5 => ['09:00', '18:00'], // Friday
+        6 => ['09:00', '16:00'], // Saturday
+    ];
+
     // 4) Admin list (filters: date, status, service_id, staff_id). Basic sorts.
     public function index(Request $request)
     {
@@ -338,6 +353,25 @@ class AppointmentAdminController extends Controller
             $data['price']            = $data['price'] ?? (float) ($service->price ?? 0);
         }
 
+        // Real bookings must respect clinic working hours.
+        $this->assertWithinClinicWorkingHours(
+            $data['date'],
+            $data['starts_at'],
+            (int) $data['duration_minutes']
+        );
+
+        // If this booking is covered by a package, the package must belong to the
+        // same client and must be for the same service.
+        if (!empty($data['service_package_id'])) {
+            $package = ServicePackage::findOrFail((int) $data['service_package_id']);
+
+            if (!empty($data['user_id']) && (int) $package->user_id !== (int) $data['user_id']) {
+                abort(422, 'The selected package does not belong to this client.');
+            }
+
+            $this->assertPackageMatchesService($package, (int) $data['service_id']);
+        }
+
         // Overlap guard (same service OR same staff if staff_id is set)
         $this->assertNoOverlap(
             $data['date'],
@@ -425,6 +459,43 @@ class AppointmentAdminController extends Controller
         }
     }
 
+    protected function normalizeStartsAt(string $startsAt): string
+    {
+        return strlen($startsAt) === 5 ? $startsAt . ':00' : $startsAt;
+    }
+
+    protected function assertWithinClinicWorkingHours(
+        string $date,
+        string $startsAt,
+        int $durationMinutes
+    ): void {
+        $dateOnly = Carbon::parse($date)->toDateString();
+        $startsAtNorm = $this->normalizeStartsAt($startsAt);
+
+        $start = Carbon::parse($dateOnly . ' ' . $startsAtNorm);
+        $end = (clone $start)->addMinutes($durationMinutes);
+
+        $hours = self::CLINIC_WORKING_HOURS[$start->dayOfWeek] ?? null;
+
+        if (!$hours) {
+            abort(422, 'The clinic is closed on this day.');
+        }
+
+        $open = Carbon::parse($dateOnly . ' ' . $hours[0] . ':00');
+        $close = Carbon::parse($dateOnly . ' ' . $hours[1] . ':00');
+
+        if ($start->lt($open) || $end->gt($close)) {
+            abort(422, 'The selected time is outside clinic working hours.');
+        }
+    }
+
+    protected function assertPackageMatchesService(ServicePackage $package, int $serviceId): void
+    {
+        if ((int) $package->service_id !== (int) $serviceId) {
+            abort(422, 'This package can only be used for its own service. Select the correct package or create a single treatment appointment.');
+        }
+    }
+
     /**
      * Overlap rule (robust):
      * - Accepts $date as 'YYYY-MM-DD' OR full datetime; normalizes to date-only
@@ -495,6 +566,23 @@ class AppointmentAdminController extends Controller
             'source'             => ['nullable', 'string', 'max:50'],
         ]);
 
+        $source = $data['source'] ?? 'manual_import';
+        $isAdminBooking = $source === 'admin_booking';
+
+        $dateOnly = Carbon::parse($data['date'])->toDateString();
+
+        // Manual import is only for old/past records. It must not be used to
+        // bypass real booking rules for future appointments.
+        if (!$isAdminBooking && Carbon::parse($dateOnly)->gt(Carbon::today())) {
+            abort(422, 'Past visit import cannot be used for future appointments. Use Book Appointment instead.');
+        }
+
+        // Admin booking is for today/future appointments and must respect the
+        // clinic schedule and overlap rules.
+        if ($isAdminBooking && Carbon::parse($dateOnly)->lt(Carbon::today())) {
+            abort(422, 'Booking appointments cannot be created in the past. Use Add Past Visit instead.');
+        }
+
         $user = User::findOrFail($client);
         $service = Service::findOrFail((int) $data['service_id']);
 
@@ -511,24 +599,45 @@ class AppointmentAdminController extends Controller
                     'message' => 'The selected package does not belong to this client.',
                 ], 422);
             }
+
+            $this->assertPackageMatchesService($package, $service->id);
         }
 
-        $status = $data['status'] ?? 'completed';
+        $status = $data['status'] ?? ($isAdminBooking ? 'confirmed' : 'completed');
         $status = $status === 'no-show' ? 'no_show' : $status;
 
-        $startsAt = $data['starts_at'] ?? '00:00';
-        $startsAt = strlen($startsAt) === 5 ? $startsAt . ':00' : $startsAt;
+        $startsAt = $data['starts_at'] ?? ($isAdminBooking ? '09:00' : '00:00');
+        $startsAt = $this->normalizeStartsAt($startsAt);
+
+        $durationMinutes = (int) ($service->duration_minutes ?? 60);
+
+        if ($isAdminBooking) {
+            $this->assertWithinClinicWorkingHours(
+                $dateOnly,
+                $startsAt,
+                $durationMinutes
+            );
+
+            $this->assertNoOverlap(
+                $dateOnly,
+                $startsAt,
+                $durationMinutes,
+                (int) $service->id,
+                $data['staff_id'] ?? null,
+                null
+            );
+        }
 
         $payload = [
             'user_id'          => $user->id,
             'service_id'       => $service->id,
             'staff_id'         => $data['staff_id'] ?? null,
-            'date'             => Carbon::parse($data['date'])->toDateString(),
+            'date'             => $dateOnly,
             'starts_at'        => $startsAt,
 
             // Admin should not need to enter this.
             // It comes from the selected service.
-            'duration_minutes' => (int) ($service->duration_minutes ?? 60),
+            'duration_minutes' => $durationMinutes,
 
             'price'            => (float) ($data['price'] ?? $service->price ?? 0),
             'status'           => $status,
@@ -557,7 +666,7 @@ class AppointmentAdminController extends Controller
         }
 
         if (Schema::hasColumn('appointments', 'source')) {
-            $payload['source'] = $data['source'] ?? 'manual_import';
+            $payload['source'] = $source;
         }
 
         if (Schema::hasColumn('appointments', 'admin_notes')) {
@@ -578,23 +687,23 @@ class AppointmentAdminController extends Controller
         $logPayload = [
             'appointment_id' => $appointment->id,
             'user_id'        => optional($request->user())->id,
-            'action'         => 'manual_import_created',
+            'action'         => $isAdminBooking ? 'admin_booking_created' : 'manual_import_created',
             'meta'           => [
-                'source'             => $data['source'] ?? 'manual_import',
+                'source'             => $source,
                 'payment_status'     => $data['payment_status'] ?? null,
                 'service_package_id' => $package?->id,
-                'message'            => 'Admin added a manual imported client visit.',
+                'message'            => $isAdminBooking ? 'Admin booked a client appointment.' : 'Admin added a manual imported client visit.',
             ],
         ];
 
         if (Schema::hasColumn('appointment_logs', 'details')) {
-            $logPayload['details'] = 'Admin added a manual imported client visit.';
+            $logPayload['details'] = $isAdminBooking ? 'Admin booked a client appointment.' : 'Admin added a manual imported client visit.';
         }
 
         AppointmentLog::create($logPayload);
 
         return response()->json([
-            'message' => 'Manual visit added',
+            'message' => $isAdminBooking ? 'Appointment booked' : 'Manual visit added',
             'data'    => $appointment,
         ], 201);
     }
@@ -646,7 +755,7 @@ class AppointmentAdminController extends Controller
                 : \Illuminate\Support\Carbon::parse($appointment->date)->toDateString(),
 
             'starts_at'        => (string) $appointment->starts_at,
-            'duration_minutes' => (int) ($data['duration_minutes'] ?? $service->duration_minutes ?? 60),
+            'duration_minutes' => (int) ($appointment->duration_minutes ?? $service?->duration_minutes ?? 60),
 
             // 💰 Prices on this booking
             'price'           => $appointmentPrice,
@@ -1064,10 +1173,18 @@ class AppointmentAdminController extends Controller
             $startsAt = $appointment->starts_at ?? $appointment->time;
             $startsAt = strlen($startsAt) === 5 ? $startsAt . ':00' : $startsAt;
 
+            $durationMinutes = (int) ($appointment->duration_minutes ?? $service->duration_minutes ?? 60);
+
+            $this->assertWithinClinicWorkingHours(
+                $dateOnly,
+                $startsAt,
+                $durationMinutes
+            );
+
             $this->assertNoOverlap(
                 $dateOnly,
                 $startsAt,
-                (int) $service->duration_minutes,
+                $durationMinutes,
                 (int) $service->id,
                 $appointment->staff_id,
                 (int) $appointment->id
