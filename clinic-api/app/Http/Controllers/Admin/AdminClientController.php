@@ -7,7 +7,6 @@ use App\Models\ServicePackage;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class AdminClientController extends Controller
@@ -207,15 +206,11 @@ class AdminClientController extends Controller
         }
 
         $client = DB::transaction(function () use ($name, $phone, $email) {
-            /*
-             * The random password allows creation even when the database
-             * requires a password. The User model's "hashed" cast hashes it.
-             */
             $client = User::create([
                 'name' => $name,
                 'phone' => $phone,
                 'email' => $email,
-                'password' => Str::random(40),
+                'password' => null,
             ]);
 
             $client->assignRole('client');
