@@ -141,6 +141,7 @@ Route::prefix('v1')->group(function () {
 
         Route::get('/clients/lookup', [AdminClientController::class, 'lookupByPhone']);
         Route::get('/clients/search', [AdminClientController::class, 'search']);
+        Route::post('/clients', [AdminClientController::class, 'store']);
 
         Route::get('/clients/{client}/appointments', [AppointmentAdminController::class, 'clientAppointments'])->whereNumber('client');
 
