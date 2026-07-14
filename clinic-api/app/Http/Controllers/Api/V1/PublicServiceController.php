@@ -52,6 +52,13 @@ class PublicServiceController extends Controller
                 'price',
                 'is_active',
                 'is_bookable',
+                'is_package',
+                'total_sessions',
+                'total_minutes',
+                'usage_type',
+                'minimum_interval_days',
+                'deduction_method',
+                'staff_policy',
                 'image_path',
                 'created_at',
             ]);
@@ -178,6 +185,15 @@ class PublicServiceController extends Controller
                 'duration_minutes'  => (int) $s->duration_minutes,
                 'is_active'         => (bool) $s->is_active,
                 'is_bookable'       => (bool) $s->is_bookable,
+                'requires_appointment' => (bool) $s->requires_appointment,
+                'is_package'        => (bool) $s->is_package,
+                'usage_type'        => $s->usage_type,
+                'included_units'    => $s->usage_type === Service::USAGE_MINUTES
+                    ? $s->total_minutes
+                    : ($s->usage_type === Service::USAGE_SESSION ? $s->total_sessions : 1),
+                'minimum_interval_days' => (int) ($s->minimum_interval_days ?? 0),
+                'deduction_method'  => $s->deduction_method,
+                'staff_policy'      => $s->staff_policy,
                 'name'              => $s->name_localized,
                 'short_description' => $s->short_description_localized,
                 'image_url'         => $s->image_url,
@@ -325,6 +341,17 @@ public function show(Request $request, int $id)
         'duration_minutes' => (int) $s->duration_minutes,
         'is_active'        => (bool) $s->is_active,
         'is_bookable'      => (bool) $s->is_bookable,
+        'requires_appointment' => (bool) $s->requires_appointment,
+        'is_package'       => (bool) $s->is_package,
+        'usage_type'       => $s->usage_type,
+        'included_units'   => $s->usage_type === Service::USAGE_MINUTES
+            ? $s->total_minutes
+            : ($s->usage_type === Service::USAGE_SESSION ? $s->total_sessions : 1),
+        'total_sessions'   => $s->total_sessions,
+        'total_minutes'    => $s->total_minutes,
+        'minimum_interval_days' => (int) ($s->minimum_interval_days ?? 0),
+        'deduction_method' => $s->deduction_method,
+        'staff_policy'     => $s->staff_policy,
 
         // 🔹 Localized (based on app locale / ?lang)
         'name'              => $s->name_localized,

@@ -11,6 +11,9 @@ use App\Models\Appointment;
 use App\Models\AppointmentLog;
 use App\Models\Service;
 use App\Models\ServicePackage;
+use App\Models\Staff;
+use App\Models\PackageLog;
+use App\Services\AppointmentCompletionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -342,91 +345,131 @@ class AppointmentAdminController extends Controller
 
 
     // 5) Admin create
-    public function store(AppointmentStoreRequest $request)
+    public function store(AppointmentStoreRequest $request, AppointmentCompletionService $completionService)
     {
         $data = $request->validated();
+        $service = Service::findOrFail($data['service_id']);
 
-        // Copy duration/price from Service when not provided
-        if (!isset($data['duration_minutes']) || !isset($data['price'])) {
-            $service = Service::findOrFail($data['service_id']);
-            $data['duration_minutes'] = $data['duration_minutes'] ?? (int) ($service->duration_minutes ?? 60);
-            $data['price']            = $data['price'] ?? (float) ($service->price ?? 0);
+        if ($service->usage_type === Service::USAGE_MINUTES || ! $service->is_bookable) {
+            abort(422, 'Quantity/minute services are walk-in usage and cannot be booked as appointments.');
         }
 
-        // Real bookings must respect clinic working hours.
+        $this->assertStaffCanPerformService($data['staff_id'] ?? null, $service->id);
+
+        $data['duration_minutes'] = $data['duration_minutes'] ?? (int) ($service->duration_minutes ?? 60);
+        $data['price'] = $data['price'] ?? (float) ($service->price ?? 0);
+        $data['source'] = $data['source'] ?? Appointment::SOURCE_ADMIN_BOOKING;
+
         $this->assertWithinClinicWorkingHours(
             $data['date'],
             $data['starts_at'],
-            (int) $data['duration_minutes']
+            (int) $data['duration_minutes'],
         );
 
-        // If this booking is covered by a package, the package must belong to the
-        // same client and must be for the same service.
-        if (!empty($data['service_package_id'])) {
-            $package = ServicePackage::findOrFail((int) $data['service_package_id']);
-
-            if (!empty($data['user_id']) && (int) $package->user_id !== (int) $data['user_id']) {
-                abort(422, 'The selected package does not belong to this client.');
-            }
-
-            $this->assertPackageMatchesService($package, (int) $data['service_id']);
+        if ($service->usage_type === Service::USAGE_SESSION && empty($data['service_package_id'])) {
+            abort(422, 'Select the exact client package before booking a package session.');
         }
 
-        // Overlap guard (same service OR same staff if staff_id is set)
+        if (! empty($data['service_package_id'])) {
+            if (empty($data['user_id'])) {
+                abort(422, 'A registered client is required when using a package.');
+            }
+
+            $package = ServicePackage::findOrFail((int) $data['service_package_id']);
+            $this->preparePackageForAppointment(
+                package: $package,
+                userId: (int) $data['user_id'],
+                serviceId: (int) $data['service_id'],
+                staffId: $data['staff_id'] ?? null,
+                date: $data['date'],
+                enforceInterval: true,
+            );
+        }
+
         $this->assertNoOverlap(
             $data['date'],
             $data['starts_at'],
             (int) $data['duration_minutes'],
             (int) $data['service_id'],
             $data['staff_id'] ?? null,
-            null // ignoreId
+            null,
         );
 
-        // Ensure unique reference code
+        $requestedStatus = $data['status'];
+        if ($requestedStatus === Appointment::STATUS_COMPLETED) {
+            $data['status'] = Appointment::STATUS_CONFIRMED;
+        }
+
         $data['reference_code'] = $this->newReferenceCode();
 
-        $appt = Appointment::create($data)->load('service');
+        $appointment = DB::transaction(function () use ($data, $requestedStatus, $completionService, $request) {
+            $appointment = Appointment::create($data);
+
+            if ($requestedStatus === Appointment::STATUS_COMPLETED) {
+                $completionService->complete(
+                    appointment: $appointment,
+                    actorUserId: optional($request->user())->id,
+                    note: $data['notes'] ?? null,
+                    source: PackageLog::SOURCE_AUTOMATIC,
+                );
+            }
+
+            return $appointment->refresh();
+        });
 
         return response()->json([
-            'message'     => 'Appointment created',
-            'appointment' => $appt,
+            'message' => 'Appointment created',
+            'appointment' => $appointment->load(['service', 'package']),
         ], 201);
     }
 
-    // 6) Admin update (status/notes + transition rules)
-    public function update(AppointmentUpdateRequest $request, Appointment $appointment)
-    {
+    public function update(
+        AppointmentUpdateRequest $request,
+        Appointment $appointment,
+        AppointmentCompletionService $completionService,
+    ) {
         $data = $request->validated();
+        $requestedStatus = $data['status'] ?? null;
 
-        if (isset($data['status'])) {
-            $this->assertTransitionAllowed($appointment->status, $data['status']);
+        if ($requestedStatus !== null) {
+            $this->assertTransitionAllowed($appointment->status, $requestedStatus);
         }
 
-        // Only notes and status are allowed here (as per minimal spec)
-        $updates = [];
-        if (array_key_exists('status', $data)) $updates['status'] = $data['status'];
-        if (array_key_exists('notes',  $data)) $updates['notes']  = $data['notes'];
+        if ($requestedStatus === Appointment::STATUS_COMPLETED) {
+            $completionService->complete(
+                appointment: $appointment,
+                actorUserId: optional($request->user())->id,
+                note: $data['notes'] ?? null,
+                source: PackageLog::SOURCE_AUTOMATIC,
+            );
+        } else {
+            $updates = [];
+            if (array_key_exists('status', $data)) {
+                $updates['status'] = $data['status'];
+            }
+            if (array_key_exists('notes', $data)) {
+                $updates['notes'] = $data['notes'];
+            }
 
-        if (!empty($updates)) {
-            $appointment->fill($updates)->save();
-        }
-
-        // Side-effects when completing
-        if (($updates['status'] ?? null) === 'completed') {
-            $appointment->refresh()->load('service');
-            $this->handleCompletionSideEffects($appointment);
+            if ($updates !== []) {
+                $appointment->fill($updates)->save();
+            }
         }
 
         return response()->json([
-            'message'     => 'Appointment updated',
-            'appointment' => $appointment->fresh()->load('service'),
+            'message' => 'Appointment updated',
+            'appointment' => $appointment->fresh()->load(['service', 'package']),
         ]);
     }
 
-    // 7) Admin delete (soft delete)
     public function destroy(Appointment $appointment)
     {
+        if ($appointment->status === Appointment::STATUS_COMPLETED) {
+            abort(422, 'Correct the completed appointment status with a reason before deleting it, so package usage can be restored and audited.');
+        }
+
         $appointment->delete();
+
         return response()->json(['message' => 'Appointment deleted']);
     }
 
@@ -496,6 +539,77 @@ class AppointmentAdminController extends Controller
         }
     }
 
+    protected function assertStaffCanPerformService(?int $staffId, int $serviceId): void
+    {
+        if (! $staffId) {
+            return;
+        }
+
+        $qualified = Staff::query()
+            ->whereKey($staffId)
+            ->where('is_active', true)
+            ->whereHas('services', fn ($query) => $query->where('services.id', $serviceId))
+            ->exists();
+
+        if (! $qualified) {
+            abort(422, 'The selected staff member is not qualified or active for this service.');
+        }
+    }
+
+    protected function preparePackageForAppointment(
+        ServicePackage $package,
+        int $userId,
+        int $serviceId,
+        ?int $staffId,
+        string $date,
+        bool $enforceInterval = true,
+    ): void {
+        if ((int) $package->user_id !== $userId) {
+            abort(422, 'The selected package does not belong to this client.');
+        }
+
+        $this->assertPackageMatchesService($package, $serviceId);
+
+        try {
+            $package->assertUsableOn($date);
+        } catch (\LogicException $exception) {
+            abort(422, $exception->getMessage());
+        }
+
+        if (! $package->isSessionsType()) {
+            abort(422, 'Quantity/minute packages cannot be used for appointments.');
+        }
+
+        if ((int) $package->remaining_sessions <= 0) {
+            abort(422, 'The selected package has no sessions remaining.');
+        }
+
+        if ($enforceInterval && $package->next_allowed_date && Carbon::parse($date)->lt(Carbon::parse($package->next_allowed_date))) {
+            abort(422, "The next package session is allowed from {$package->next_allowed_date}.");
+        }
+
+        if ($package->staffPolicy() !== Service::STAFF_SAME) {
+            return;
+        }
+
+        if (! $staffId) {
+            abort(422, 'A staff member is required for a same-staff package.');
+        }
+
+        $hasCompletedSession = $package->activeUsageLogs()
+            ->where('usage_type', Service::USAGE_SESSION)
+            ->exists();
+
+        if ($hasCompletedSession && (int) $package->assigned_staff_id !== (int) $staffId) {
+            abort(422, 'This package is locked to its assigned staff member.');
+        }
+
+        if (! $hasCompletedSession && (int) $package->assigned_staff_id !== (int) $staffId) {
+            $package->assigned_staff_id = $staffId;
+            $package->save();
+        }
+    }
+
     /**
      * Overlap rule (robust):
      * - Accepts $date as 'YYYY-MM-DD' OR full datetime; normalizes to date-only
@@ -547,164 +661,157 @@ class AppointmentAdminController extends Controller
         }
     }
 
-    public function storeClientManualAppointment(Request $request, int $client)
-    {
+    public function storeClientManualAppointment(
+        Request $request,
+        int $client,
+        AppointmentCompletionService $completionService,
+    ) {
         $data = $request->validate([
-            'service_id'         => ['required', 'integer', 'exists:services,id'],
+            'service_id' => ['required', 'integer', 'exists:services,id'],
             'service_package_id' => ['nullable', 'integer', 'exists:service_packages,id'],
-            'staff_id'           => ['nullable', 'integer', 'exists:users,id'],
-
-            'date'               => ['required', 'date_format:Y-m-d'],
-            'starts_at'          => ['nullable', 'date_format:H:i'],
-            'duration_minutes'   => ['nullable', 'integer', 'min:1', 'max:1440'],
-
-            'status'             => ['nullable', 'in:pending,confirmed,completed,cancelled,no_show,no-show'],
-            'price'              => ['nullable', 'numeric', 'min:0'],
-            'payment_status'     => ['nullable', 'in:paid,partial,unpaid'],
-
-            'notes'              => ['nullable', 'string', 'max:10000'],
-            'source'             => ['nullable', 'string', 'max:50'],
+            'staff_id' => ['nullable', 'integer', 'exists:staff,id'],
+            'date' => ['required', 'date_format:Y-m-d'],
+            'starts_at' => ['nullable', 'date_format:H:i'],
+            'duration_minutes' => ['nullable', 'integer', 'min:1', 'max:1440'],
+            'status' => ['nullable', 'in:pending,confirmed,completed,cancelled,no_show,no-show'],
+            'price' => ['nullable', 'numeric', 'min:0'],
+            'payment_status' => ['nullable', 'in:paid,partial,unpaid'],
+            'notes' => ['nullable', 'string', 'max:10000'],
+            'source' => ['nullable', 'in:admin_booking,manual_import'],
         ]);
 
-        $source = $data['source'] ?? 'manual_import';
-        $isAdminBooking = $source === 'admin_booking';
-
+        $source = $data['source'] ?? Appointment::SOURCE_MANUAL_IMPORT;
+        $isAdminBooking = $source === Appointment::SOURCE_ADMIN_BOOKING;
         $dateOnly = Carbon::parse($data['date'])->toDateString();
 
-        // Manual import is only for old/past records. It must not be used to
-        // bypass real booking rules for future appointments.
-        if (!$isAdminBooking && Carbon::parse($dateOnly)->gt(Carbon::today())) {
-            abort(422, 'Past visit import cannot be used for future appointments. Use Book Appointment instead.');
+        if (! $isAdminBooking && Carbon::parse($dateOnly)->gt(Carbon::today())) {
+            abort(422, 'Past visit import cannot be used for future appointments.');
         }
 
-        // Admin booking is for today/future appointments and must respect the
-        // clinic schedule and overlap rules.
         if ($isAdminBooking && Carbon::parse($dateOnly)->lt(Carbon::today())) {
-            abort(422, 'Booking appointments cannot be created in the past. Use Add Past Visit instead.');
+            abort(422, 'Admin booking cannot be created in the past.');
         }
 
         $user = User::findOrFail($client);
         $service = Service::findOrFail((int) $data['service_id']);
 
-        $package = null;
-
-        if (!empty($data['service_package_id'])) {
-            $package = ServicePackage::query()
-                ->where('id', (int) $data['service_package_id'])
-                ->where('user_id', $user->id)
-                ->first();
-
-            if (!$package) {
-                return response()->json([
-                    'message' => 'The selected package does not belong to this client.',
-                ], 422);
-            }
-
-            $this->assertPackageMatchesService($package, $service->id);
+        if ($service->usage_type === Service::USAGE_MINUTES || ! $service->is_bookable) {
+            abort(422, 'Quantity/minute services must be recorded as package usage, not appointments.');
         }
 
-        $status = $data['status'] ?? ($isAdminBooking ? 'confirmed' : 'completed');
-        $status = $status === 'no-show' ? 'no_show' : $status;
+        $this->assertStaffCanPerformService($data['staff_id'] ?? null, $service->id);
 
-        $startsAt = $data['starts_at'] ?? ($isAdminBooking ? '09:00' : '00:00');
-        $startsAt = $this->normalizeStartsAt($startsAt);
+        $status = $data['status'] ?? ($isAdminBooking
+            ? Appointment::STATUS_CONFIRMED
+            : Appointment::STATUS_COMPLETED);
+        $status = $status === 'no-show' ? Appointment::STATUS_NO_SHOW : $status;
 
+        $startsAt = $this->normalizeStartsAt(
+            $data['starts_at'] ?? ($isAdminBooking ? '09:00' : '00:00'),
+        );
         $durationMinutes = (int) ($service->duration_minutes ?? 60);
 
-        if ($isAdminBooking) {
-            $this->assertWithinClinicWorkingHours(
-                $dateOnly,
-                $startsAt,
-                $durationMinutes
-            );
+        if ($service->usage_type === Service::USAGE_SESSION && empty($data['service_package_id'])) {
+            abort(422, 'Select the exact client package before saving a package session.');
+        }
 
+        $package = null;
+        if (! empty($data['service_package_id'])) {
+            $package = ServicePackage::findOrFail((int) $data['service_package_id']);
+            $this->preparePackageForAppointment(
+                package: $package,
+                userId: $user->id,
+                serviceId: $service->id,
+                staffId: $data['staff_id'] ?? null,
+                date: $dateOnly,
+                enforceInterval: $isAdminBooking,
+            );
+        }
+
+        if ($isAdminBooking) {
+            $this->assertWithinClinicWorkingHours($dateOnly, $startsAt, $durationMinutes);
             $this->assertNoOverlap(
                 $dateOnly,
                 $startsAt,
                 $durationMinutes,
                 (int) $service->id,
                 $data['staff_id'] ?? null,
-                null
+                null,
             );
         }
 
         $payload = [
-            'user_id'          => $user->id,
-            'service_id'       => $service->id,
-            'staff_id'         => $data['staff_id'] ?? null,
-            'date'             => $dateOnly,
-            'starts_at'        => $startsAt,
-
-            // Admin should not need to enter this.
-            // It comes from the selected service.
+            'user_id' => $user->id,
+            'service_id' => $service->id,
+            'service_package_id' => $package?->id,
+            'staff_id' => $data['staff_id'] ?? null,
+            'date' => $dateOnly,
+            'starts_at' => $startsAt,
             'duration_minutes' => $durationMinutes,
-
-            'price'            => (float) ($data['price'] ?? $service->price ?? 0),
-            'status'           => $status,
-            'reference_code'   => $this->newReferenceCode(),
-            'notes'            => $data['notes'] ?? null,
+            'price' => (float) ($data['price'] ?? $service->price ?? 0),
+            'status' => $status === Appointment::STATUS_COMPLETED
+                ? Appointment::STATUS_CONFIRMED
+                : $status,
+            'source' => $source,
+            'reference_code' => $this->newReferenceCode(),
+            'notes' => $data['notes'] ?? null,
+            'customer_name' => $user->name,
+            'customer_email' => $user->email,
+            'customer_phone' => $user->phone,
         ];
-
-        if (Schema::hasColumn('appointments', 'customer_name')) {
-            $payload['customer_name'] = $user->name;
-        }
-
-        if (Schema::hasColumn('appointments', 'customer_email')) {
-            $payload['customer_email'] = $user->email;
-        }
-
-        if (Schema::hasColumn('appointments', 'customer_phone')) {
-            $payload['customer_phone'] = $user->phone;
-        }
-
-        if ($package && Schema::hasColumn('appointments', 'service_package_id')) {
-            $payload['service_package_id'] = $package->id;
-        }
 
         if (Schema::hasColumn('appointments', 'payment_status')) {
             $payload['payment_status'] = $data['payment_status'] ?? null;
-        }
-
-        if (Schema::hasColumn('appointments', 'source')) {
-            $payload['source'] = $source;
         }
 
         if (Schema::hasColumn('appointments', 'admin_notes')) {
             $payload['admin_notes'] = $data['notes'] ?? null;
         }
 
-        $appointment = new Appointment();
-        $appointment->forceFill($payload);
-        $appointment->save();
+        $appointment = DB::transaction(function () use (
+            $payload,
+            $status,
+            $source,
+            $isAdminBooking,
+            $data,
+            $package,
+            $request,
+            $completionService,
+        ) {
+            $appointment = new Appointment();
+            $appointment->forceFill($payload);
+            $appointment->save();
 
-        $appointment->load([
-            'service.category',
-            'staff',
-            'user',
-            'package',
-        ]);
+            AppointmentLog::create([
+                'appointment_id' => $appointment->id,
+                'user_id' => optional($request->user())->id,
+                'action' => $isAdminBooking ? 'admin_booking_created' : 'manual_import_created',
+                'meta' => [
+                    'source' => $source,
+                    'payment_status' => $data['payment_status'] ?? null,
+                    'service_package_id' => $package?->id,
+                ],
+            ]);
 
-        $logPayload = [
-            'appointment_id' => $appointment->id,
-            'user_id'        => optional($request->user())->id,
-            'action'         => $isAdminBooking ? 'admin_booking_created' : 'manual_import_created',
-            'meta'           => [
-                'source'             => $source,
-                'payment_status'     => $data['payment_status'] ?? null,
-                'service_package_id' => $package?->id,
-                'message'            => $isAdminBooking ? 'Admin booked a client appointment.' : 'Admin added a manual imported client visit.',
-            ],
-        ];
+            if ($status === Appointment::STATUS_COMPLETED) {
+                $completionService->complete(
+                    appointment: $appointment,
+                    actorUserId: optional($request->user())->id,
+                    note: $data['notes'] ?? null,
+                    source: $isAdminBooking
+                        ? PackageLog::SOURCE_AUTOMATIC
+                        : PackageLog::SOURCE_IMPORTED,
+                );
+            }
 
-        if (Schema::hasColumn('appointment_logs', 'details')) {
-            $logPayload['details'] = $isAdminBooking ? 'Admin booked a client appointment.' : 'Admin added a manual imported client visit.';
-        }
+            return $appointment->refresh();
+        });
 
-        AppointmentLog::create($logPayload);
+        $appointment->load(['service.category', 'staff', 'user', 'package']);
 
         return response()->json([
             'message' => $isAdminBooking ? 'Appointment booked' : 'Manual visit added',
-            'data'    => $appointment,
+            'data' => $appointment,
         ], 201);
     }
      
@@ -972,83 +1079,6 @@ class AppointmentAdminController extends Controller
 }
 
 
-    private function handleCompletionSideEffects(Appointment $appointment): void
-    {
-        $appointment->loadMissing('service');
-
-        $service = $appointment->service;
-        $userId  = $appointment->user_id;
-
-        if (!$service || !$userId) return;
-
-        // Prefer explicitly linked package (avoids deducting the wrong one if multiple exist)
-        $pkg = null;
-        if ($appointment->service_package_id) {
-            $pkg = ServicePackage::find($appointment->service_package_id);
-        }
-
-        // Fallback: find an active package for this user+service (date-valid)
-        if (!$pkg) {
-            $today = Carbon::today();
-            $pkg = ServicePackage::query()
-                ->where('user_id', $userId)
-                ->where('service_id', $service->id)
-                ->where('status', 'active')
-                ->where(function ($q) use ($today) {
-                    $q->whereNull('starts_on')->orWhereDate('starts_on', '<=', $today);
-                })
-                ->where(function ($q) use ($today) {
-                    $q->whereNull('expires_on')->orWhereDate('expires_on', '>=', $today);
-                })
-                ->first();
-        }
-
-        if (!$pkg) {
-            \Log::info('No active package found for completion of appt #'.$appointment->id);
-            return;
-        }
-
-        try {
-            // -------- Sessions-type (e.g., Laser 6 sessions) --------
-            if (!is_null($pkg->remaining_sessions) && (int)$pkg->remaining_sessions > 0) {
-                if (!empty($service->is_package) && !empty($service->total_sessions)) {
-                    // deduct 1 session per completed appointment
-                    if (method_exists($pkg, 'deductSessions')) {
-                        $pkg->deductSessions(
-                            1,
-                            staffId: $appointment->staff_id,
-                            note: 'Auto-deduct session on completion (appt #'.$appointment->id.')'
-                        );
-                    } else {
-                        // minimal fallback
-                        $pkg->decrement('remaining_sessions', 1);
-                    }
-                }
-            }
-
-            // -------- Minutes-type (e.g., Solarium minutes) --------
-            // If the package tracks minutes, deduct the appointment duration (or service duration).
-            if (!is_null($pkg->remaining_minutes)) {
-                $minutesToDeduct = (int) ($appointment->duration_minutes ?? $service->duration_minutes ?? 0);
-                if ($minutesToDeduct > 0) {
-                    if (method_exists($pkg, 'deductMinutes')) {
-                        $pkg->deductMinutes(
-                            $minutesToDeduct,
-                            staffId: $appointment->staff_id,
-                            note: 'Auto-deduct minutes on completion (appt #'.$appointment->id.')'
-                        );
-                    } else {
-                        // minimal fallback with floor at 0
-                        $new = max(0, (int)$pkg->remaining_minutes - $minutesToDeduct);
-                        $pkg->update(['remaining_minutes' => $new]);
-                    }
-                }
-            }
-
-        } catch (\Throwable $e) {
-            \Log::warning('Completion side-effects failed for appt #'.$appointment->id.': '.$e->getMessage());
-        }
-    }
 
     /**
      * PATCH /api/v1/admin/appointments/{appointment}/assign
@@ -1154,85 +1184,94 @@ class AppointmentAdminController extends Controller
      * PATCH /api/v1/admin/appointments/{appointment}/status
      * Allows admin to set any valid status (pending|confirmed|cancelled|completed|no_show)
      */
-    public function updateStatus(AdminUpdateAppointmentStatusRequest $request, Appointment $appointment)
-    {
-        $to   = $request->validated()['status'];
+    public function updateStatus(
+        AdminUpdateAppointmentStatusRequest $request,
+        Appointment $appointment,
+        AppointmentCompletionService $completionService,
+    ) {
+        $validated = $request->validated();
+        $to = $validated['status'];
         $from = $appointment->status;
 
         if ($from === $to) {
             return response()->json([
                 'message' => 'Status unchanged.',
-                'data'    => ['id' => $appointment->id, 'status' => $appointment->status],
+                'data' => ['id' => $appointment->id, 'status' => $appointment->status],
             ]);
         }
 
-        // If moving to CONFIRMED, ensure no overlap first
-        if ($to === 'confirmed') {
-            $service  = Service::findOrFail($appointment->service_id);
+        if ($to === Appointment::STATUS_CONFIRMED) {
+            $service = Service::findOrFail($appointment->service_id);
             $dateOnly = Carbon::parse($appointment->date)->toDateString();
-            $startsAt = $appointment->starts_at ?? $appointment->time;
-            $startsAt = strlen($startsAt) === 5 ? $startsAt . ':00' : $startsAt;
-
+            $startsAt = $this->normalizeStartsAt($appointment->starts_at ?? $appointment->time);
             $durationMinutes = (int) ($appointment->duration_minutes ?? $service->duration_minutes ?? 60);
 
-            $this->assertWithinClinicWorkingHours(
-                $dateOnly,
-                $startsAt,
-                $durationMinutes
-            );
-
+            $this->assertWithinClinicWorkingHours($dateOnly, $startsAt, $durationMinutes);
             $this->assertNoOverlap(
                 $dateOnly,
                 $startsAt,
                 $durationMinutes,
                 (int) $service->id,
                 $appointment->staff_id,
-                (int) $appointment->id
+                (int) $appointment->id,
             );
         }
 
-        DB::transaction(function () use ($request, $appointment, $from, $to) {
-            // Optional timestamp columns if present
-            // $stampFields = [
-            //     'confirmed' => 'confirmed_at',
-            //     'cancelled' => 'cancelled_at',
-            //     'completed' => 'completed_at',
-            //     'no_show'   => 'no_show_at',
-            // ];
-            // if (isset($stampFields[$to]) && Schema::hasColumn('appointments', $stampFields[$to])) {
-            //     $appointment->{$stampFields[$to]} = now();
-            // }
-
-            // Update status + optional notes
-            $appointment->status = $to;
-            if ($request->filled('notes') && Schema::hasColumn('appointments', 'notes')) {
-                $appointment->notes = $request->input('notes');
+        if ($to === Appointment::STATUS_COMPLETED) {
+            $completionService->complete(
+                appointment: $appointment,
+                actorUserId: optional($request->user())->id,
+                note: $validated['notes'] ?? null,
+                source: $appointment->source === Appointment::SOURCE_MANUAL_IMPORT
+                    ? PackageLog::SOURCE_IMPORTED
+                    : PackageLog::SOURCE_AUTOMATIC,
+            );
+        } elseif ($from === Appointment::STATUS_COMPLETED) {
+            $reason = trim((string) ($validated['reason'] ?? ''));
+            if ($reason === '') {
+                abort(422, 'A reason is required when correcting a completed appointment.');
             }
-            $appointment->save();
 
-            AppointmentLog::create([
-                'appointment_id' => $appointment->id,
-                'user_id'        => optional(request()->user())->id,
-                'action'         => 'status_changed',
-                'meta'           => ['from' => $from, 'to' => $to],
-            ]);
+            $completionService->reverseCompletion(
+                appointment: $appointment,
+                targetStatus: $to,
+                actorUserId: optional($request->user())->id,
+                reason: $reason,
+            );
 
-            // Side-effects if completed
-            if ($to === 'completed') {
-                $appointment->refresh()->load('service');
-                $this->handleCompletionSideEffects($appointment);
+            if (array_key_exists('notes', $validated)) {
+                $appointment->refresh();
+                $appointment->notes = $validated['notes'];
+                $appointment->save();
             }
-        });
+        } else {
+            DB::transaction(function () use ($request, $appointment, $from, $to, $validated) {
+                $appointment->status = $to;
+                if (array_key_exists('notes', $validated)) {
+                    $appointment->notes = $validated['notes'];
+                }
+                $appointment->save();
+
+                AppointmentLog::create([
+                    'appointment_id' => $appointment->id,
+                    'user_id' => optional($request->user())->id,
+                    'action' => 'status_changed',
+                    'meta' => ['from' => $from, 'to' => $to],
+                ]);
+            });
+        }
+
+        $appointment->refresh();
 
         return response()->json([
             'message' => "Appointment status updated to {$to}.",
-            'data'    => [
-                'id'        => $appointment->id,
-                'status'    => $appointment->status,
-                'date'      => $appointment->date,
+            'data' => [
+                'id' => $appointment->id,
+                'status' => $appointment->status,
+                'date' => $appointment->date,
                 'starts_at' => $appointment->starts_at,
-                'staff_id'  => $appointment->staff_id,
-                'service_id'=> $appointment->service_id,
+                'staff_id' => $appointment->staff_id,
+                'service_id' => $appointment->service_id,
             ],
         ]);
     }

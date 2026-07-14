@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use App\Models\User;
 use App\Models\Service;
+use App\Services\PackageUsageService;
 
 /**
  * Staff area — package utilities while working with clients.
@@ -31,7 +32,7 @@ class StaffPackageController extends Controller
         $data = $request->validate([
             'client_id'  => ['required', 'integer', 'min:1'],
             'service_id' => ['sometimes', 'integer', 'min:1'],
-            'status'     => ['sometimes', Rule::in(['active', 'used', 'expired', 'frozen'])],
+            'status'     => ['sometimes', Rule::in(ServicePackage::statuses())],
         ]);
 
         $q = ServicePackage::query()
@@ -55,6 +56,12 @@ class StaffPackageController extends Controller
             'currency',
             'remaining_sessions',
             'remaining_minutes',
+            'assigned_staff_id',
+            'snapshot_usage_type',
+            'snapshot_minimum_interval_days',
+            'snapshot_deduction_method',
+            'snapshot_staff_policy',
+            'snapshot_duration_minutes',
             'starts_on',
             'expires_on',
             'status',
@@ -68,6 +75,11 @@ class StaffPackageController extends Controller
                     'service_name'          => $p->service_name,
                     'remaining_sessions'    => $p->remaining_sessions,
                     'remaining_minutes'     => $p->remaining_minutes,
+                    'usage_type'            => $p->snapshot_usage_type,
+                    'minimum_interval_days'  => $p->snapshot_minimum_interval_days,
+                    'staff_policy'           => $p->snapshot_staff_policy,
+                    'assigned_staff_id'      => $p->assigned_staff_id,
+                    'next_allowed_date'      => $p->next_allowed_date,
                     'price_total'           => (float) ($p->price_total ?? 0),
                     'amount_paid'           => (float) ($p->amount_paid ?? 0),
                     'remaining_balance'     => (float) ($p->remaining_to_pay ?? 0),
@@ -89,86 +101,91 @@ class StaffPackageController extends Controller
     public function attachToAppointment(Request $request, int $id)
     {
         $staff = $request->user()->staff;
-        abort_if(!$staff, 403, 'Not a staff member');
+        abort_if(! $staff, 403, 'Not a staff member');
 
-        $a = Appointment::with(['client', 'service'])
+        $appointment = Appointment::with(['client', 'service'])
             ->where('id', $id)
             ->where('staff_id', $staff->id)
             ->first();
 
-        if (!$a) {
+        if (! $appointment) {
             return response()->json(['message' => 'Appointment not found'], 404);
         }
 
-        if (!$a->client) {
-            return response()->json(['message' => 'Only appointments with registered clients can attach a package'], 422);
+        if (! $appointment->client) {
+            return response()->json(['message' => 'Only registered-client appointments can use a package.'], 422);
         }
 
-        $v = $request->validate([
-            'package_id' => ['required', 'integer', 'min:1'],
+        if ($appointment->status === Appointment::STATUS_COMPLETED) {
+            return response()->json(['message' => 'A package cannot be attached after completion.'], 422);
+        }
+
+        $data = $request->validate([
+            'package_id' => ['required', 'integer', 'exists:service_packages,id'],
         ]);
 
-        DB::transaction(function () use ($a, $v) {
-            $pkg = ServicePackage::lockForUpdate()->find($v['package_id']);
+        DB::transaction(function () use ($appointment, $data, $staff) {
+            $package = ServicePackage::query()->lockForUpdate()->findOrFail($data['package_id']);
 
-            if (!$pkg || $pkg->user_id !== $a->client->id) {
+            if ((int) $package->user_id !== (int) $appointment->client->id) {
                 abort(422, 'Package does not belong to this client.');
             }
 
-            if ($pkg->service_id !== $a->service_id) {
+            if ((int) $package->service_id !== (int) $appointment->service_id) {
                 abort(422, 'Package is for a different service.');
             }
 
-            if ($pkg->status !== 'active') {
-                abort(422, 'Package is not active.');
+            try {
+                $package->assertUsableOn($appointment->date);
+            } catch (\LogicException $exception) {
+                abort(422, $exception->getMessage());
             }
 
-            if ($pkg->starts_on && Carbon::today()->lt(Carbon::parse($pkg->starts_on))) {
-                abort(422, 'Package not started yet.');
+            if (! $package->isSessionsType()) {
+                abort(422, 'Quantity/minute packages are walk-in only and cannot be attached to appointments.');
             }
 
-            if ($pkg->expires_on && Carbon::today()->gt(Carbon::parse($pkg->expires_on))) {
-                abort(422, 'Package expired.');
+            if ((int) $package->remaining_sessions <= 0) {
+                abort(422, 'Package has no sessions remaining.');
             }
 
-            $ok = false;
+            if ($package->staffPolicy() === Service::STAFF_SAME) {
+                $hasCompletedSession = $package->activeUsageLogs()
+                    ->where('usage_type', Service::USAGE_SESSION)
+                    ->exists();
 
-            if (!is_null($pkg->remaining_sessions) && $pkg->remaining_sessions > 0) {
-                $ok = true;
+                if ($hasCompletedSession && (int) $package->assigned_staff_id !== (int) $staff->id) {
+                    abort(422, 'This package is locked to its assigned staff member.');
+                }
+
+                if (! $hasCompletedSession && (int) $package->assigned_staff_id !== (int) $staff->id) {
+                    $package->assigned_staff_id = $staff->id;
+                    $package->save();
+                }
             }
 
-            if (!is_null($pkg->remaining_minutes) && $pkg->remaining_minutes >= (int) $a->duration_minutes) {
-                $ok = true;
-            }
-
-            if (!$ok) {
-                abort(422, 'Package has insufficient balance.');
-            }
-
-            $a->service_package_id = $pkg->id;
-            $a->save();
+            $appointment->service_package_id = $package->id;
+            $appointment->save();
 
             AppointmentLog::create([
-                'appointment_id' => $a->id,
-                'action'         => 'package_attached',
-                'meta'           => json_encode(['package_id' => $pkg->id]),
+                'appointment_id' => $appointment->id,
+                'user_id' => optional(request()->user())->id,
+                'action' => 'package_attached',
+                'meta' => ['package_id' => $package->id],
             ]);
         });
 
-        $a->refresh()->loadMissing('package');
+        $appointment->refresh()->loadMissing('package');
 
         return response()->json([
             'message' => 'Package attached',
-            'data'    => [
-                'appointment_id' => $a->id,
-                'package_id'     => $a->service_package_id,
+            'data' => [
+                'appointment_id' => $appointment->id,
+                'package_id' => $appointment->service_package_id,
             ],
-        ], 200);
+        ]);
     }
 
-    /**
-     * PATCH /api/v1/staff/appointments/{id}/detach-package
-     */
     public function detachFromAppointment(Request $request, int $id)
     {
         $staff = $request->user()->staff;
@@ -207,120 +224,43 @@ class StaffPackageController extends Controller
     /**
      * POST /api/v1/staff/packages/{package}/use
      */
-    public function usePackage(Request $request, ServicePackage $package)
+    public function usePackage(Request $request, ServicePackage $package, PackageUsageService $usageService)
     {
         $staff = $request->user()->staff;
-        abort_if(!$staff, 403, 'Not a staff member');
+        abort_if(! $staff, 403, 'Not a staff member');
 
         $data = $request->validate([
-            'type'           => ['required', 'in:session,minutes'],
-            'amount'         => ['required', 'integer', 'min:1'],
-            'appointment_id' => ['sometimes', 'nullable', 'integer', 'exists:appointments,id'],
-            'note'           => ['sometimes', 'nullable', 'string', 'max:2000'],
+            'type' => ['sometimes', Rule::in(['minutes'])],
+            'amount' => ['required', 'integer', 'min:1'],
+            'date' => ['sometimes', 'date_format:Y-m-d'],
+            'note' => ['sometimes', 'nullable', 'string', 'max:2000'],
         ]);
 
-        $warning = null;
-
-        DB::transaction(function () use ($package, $data, $staff, &$warning) {
-            if ($package->status !== 'active') {
-                abort(422, 'Package is not active.');
-            }
-
-            if ($package->starts_on && Carbon::today()->lt(Carbon::parse($package->starts_on))) {
-                abort(422, 'Package not started yet.');
-            }
-
-            if ($package->expires_on && Carbon::today()->gt(Carbon::parse($package->expires_on))) {
-                abort(422, 'Package expired.');
-            }
-
-            $requested = (int) $data['amount'];
-            $usedSessions = null;
-            $usedMinutes = null;
-
-            if ($data['type'] === 'session') {
-                if (is_null($package->remaining_sessions)) {
-                    abort(422, 'This package does not track sessions.');
-                }
-
-                $before = (int) $package->remaining_sessions;
-                $deduct = min($before, $requested);
-                $over = max(0, $requested - $before);
-
-                $package->remaining_sessions = $before - $deduct;
-                $usedSessions = $deduct;
-
-                if ($over > 0) {
-                    $warning = "Requested {$requested} sessions, but only {$before} were remaining. Deducted {$deduct}.";
-                }
-            } else {
-                if (is_null($package->remaining_minutes)) {
-                    abort(422, 'This package does not track minutes.');
-                }
-
-                $before = (int) $package->remaining_minutes;
-                $deduct = min($before, $requested);
-                $over = max(0, $requested - $before);
-
-                $package->remaining_minutes = $before - $deduct;
-                $usedMinutes = $deduct;
-
-                if ($over > 0) {
-                    $warning = "Requested {$requested} minutes, but only {$before} were remaining. Deducted {$deduct}.";
-                }
-            }
-
-            if (
-                (!is_null($package->remaining_sessions) && (int) $package->remaining_sessions <= 0) ||
-                (!is_null($package->remaining_minutes) && (int) $package->remaining_minutes <= 0)
-            ) {
-                $package->status = 'used';
-            }
-
-            $package->save();
-
-            $appointmentId = $data['appointment_id'] ?? null;
-            $appointmentRef = null;
-
-            if ($appointmentId) {
-                $appointment = Appointment::find($appointmentId);
-                $appointmentRef = $appointment?->reference_code;
-            }
-
-            PackageLog::create([
-                'service_package_id' => $package->id,
-                'staff_id'           => $staff->id,
-                'appointment_id'     => $appointmentId,
-                'appointment_ref'    => $appointmentRef,
-                'used_sessions'      => $usedSessions,
-                'used_minutes'       => $usedMinutes,
-                'used_at'            => now(),
-                'note'               => $data['note'] ?? null,
-            ]);
-        });
+        $log = $usageService->recordManualQuantityUsage(
+            package: $package,
+            quantity: (int) $data['amount'],
+            occurredOn: $data['date'] ?? now()->toDateString(),
+            staffId: $staff->id,
+            actorUserId: $request->user()->id,
+            note: $data['note'] ?? null,
+            source: PackageLog::SOURCE_MANUAL,
+        );
 
         $package->refresh();
 
         return response()->json([
-            'message' => 'Package usage recorded',
-            'warning' => $warning,
-            'data'    => [
-                'id'                 => $package->id,
+            'message' => 'Quantity package usage recorded',
+            'data' => [
+                'id' => $package->id,
                 'remaining_sessions' => $package->remaining_sessions,
-                'remaining_minutes'  => $package->remaining_minutes,
-                'status'             => $package->status,
+                'remaining_minutes' => $package->remaining_minutes,
+                'status' => $package->status,
+                'usage_id' => $log->id,
+                'occurred_on' => optional($log->occurred_on)?->toDateString(),
             ],
         ]);
     }
 
-    /**
-     * POST /api/v1/staff/packages/{package}/payments
-     *
-     * Payment rules:
-     * - card: always MKD, no currency needed from frontend
-     * - cash: currency required, only EUR or MKD
-     * - EUR cash: converted with ServicePackage::EUR_TO_MKD
-     */
     public function addPayment(Request $request, ServicePackage $package)
     {
         $staff = $request->user()->staff;
@@ -409,81 +349,66 @@ class StaffPackageController extends Controller
     public function store(Request $request)
     {
         $staff = $request->user()->staff;
-        abort_if(!$staff, 403, 'Not a staff member');
+        abort_if(! $staff, 403, 'Not a staff member');
 
         $data = $request->validate([
-            'client_id'  => ['required', 'integer', 'exists:users,id'],
+            'client_id' => ['required', 'integer', 'exists:users,id'],
             'service_id' => ['required', 'integer', 'exists:services,id'],
-            'notes'      => ['sometimes', 'nullable', 'string', 'max:2000'],
+            'notes' => ['sometimes', 'nullable', 'string', 'max:2000'],
         ]);
 
         $client = User::where('id', $data['client_id'])
-            ->whereHas('roles', fn ($q) => $q->where('name', 'client'))
+            ->whereHas('roles', fn ($query) => $query->where('name', 'client'))
             ->first();
 
-        if (!$client) {
+        if (! $client) {
             return response()->json(['message' => 'User is not a client'], 422);
         }
 
-        $service = Service::find($data['service_id']);
+        $service = Service::findOrFail($data['service_id']);
 
-        if (!$service || !$service->is_active) {
-            return response()->json(['message' => 'Service not found or inactive'], 422);
+        if (! $service->is_active || ! $service->is_package || $service->usage_type !== Service::USAGE_MINUTES) {
+            return response()->json(['message' => 'Selected service is not a configured quantity/minute package.'], 422);
         }
 
-        if ($service->category?->name !== 'Solarium') {
-            return response()->json(['message' => 'This endpoint is for Solarium packages only'], 422);
+        $minutes = (int) $service->total_minutes;
+        if ($minutes <= 0) {
+            return response()->json(['message' => 'The package has no included minutes configured.'], 422);
         }
 
-        preg_match('/(\d+)\s*Minutes/i', $service->name, $m);
-
-        if (empty($m[1])) {
-            return response()->json(['message' => 'Could not determine minutes from service name'], 422);
-        }
-
-        $minutes = (int) $m[1];
-        $price = (float) $service->price;
-
-        $package = null;
-
-        DB::transaction(function () use (&$package, $client, $service, $minutes, $price, $staff, $data) {
-            $package = ServicePackage::create([
-                'user_id'                => $client->id,
-                'service_id'             => $service->id,
-                'service_name'           => $service->name,
-                'snapshot_total_minutes' => $minutes,
-                'remaining_minutes'      => $minutes,
-                'price_total'            => $price,
-                'price_paid'             => $price,
-                'currency'               => 'EUR',
-                'status'                 => 'active',
-                'starts_on'              => now()->toDateString(),
-                'notes'                  => $data['notes'] ?? null,
-            ]);
-
-            PackageLog::create([
-                'service_package_id' => $package->id,
-                'staff_id'           => $staff->id,
-                'used_sessions'      => 0,
-                'used_minutes'       => 0,
-                'used_at'            => now(),
-                'note'               => 'Solarium package created by staff',
-            ]);
-        });
+        $package = ServicePackage::create([
+            'user_id' => $client->id,
+            'service_id' => $service->id,
+            'service_name' => $service->name,
+            'snapshot_total_minutes' => $minutes,
+            'snapshot_usage_type' => $service->usage_type,
+            'snapshot_minimum_interval_days' => (int) ($service->minimum_interval_days ?? 0),
+            'snapshot_deduction_method' => $service->deduction_method,
+            'snapshot_staff_policy' => $service->staff_policy,
+            'snapshot_duration_minutes' => $service->duration_minutes,
+            'remaining_minutes' => $minutes,
+            'price_total' => (float) $service->price,
+            'price_paid' => 0,
+            'currency' => 'EUR',
+            'status' => ServicePackage::STATUS_ACTIVE,
+            'starts_on' => now()->toDateString(),
+            'notes' => $data['notes'] ?? null,
+        ]);
 
         return response()->json([
-            'message' => 'Solarium package created',
+            'message' => 'Quantity package created',
             'data' => [
-                'id'                    => $package->id,
-                'service_name'          => $package->service_name,
-                'remaining_minutes'     => $package->remaining_minutes,
-                'price_total'           => (float) $package->price_total,
-                'amount_paid'           => (float) $package->amount_paid,
-                'remaining_balance'     => (float) $package->remaining_to_pay,
-                'amount_paid_mkd'       => (float) $package->amount_paid_mkd,
+                'id' => $package->id,
+                'service_name' => $package->service_name,
+                'usage_type' => $package->snapshot_usage_type,
+                'remaining_minutes' => $package->remaining_minutes,
+                'price_total' => (float) $package->price_total,
+                'amount_paid' => (float) $package->amount_paid,
+                'remaining_balance' => (float) $package->remaining_to_pay,
+                'amount_paid_mkd' => (float) $package->amount_paid_mkd,
                 'remaining_balance_mkd' => (float) $package->remaining_to_pay_mkd,
-                'currency'              => $package->currency,
-                'status'                => $package->status,
+                'currency' => $package->currency,
+                'status' => $package->status,
             ],
         ], 201);
     }
@@ -495,7 +420,7 @@ class StaffPackageController extends Controller
 
         $data = $request->validate([
             'service_id' => ['sometimes', 'integer', 'min:1'],
-            'status'     => ['sometimes', Rule::in(['active', 'used', 'expired', 'frozen'])],
+            'status'     => ['sometimes', Rule::in(ServicePackage::statuses())],
         ]);
 
         $q = ServicePackage::query()
@@ -516,6 +441,12 @@ class StaffPackageController extends Controller
             'service_name',
             'snapshot_total_sessions',
             'snapshot_total_minutes',
+            'snapshot_usage_type',
+            'snapshot_minimum_interval_days',
+            'snapshot_deduction_method',
+            'snapshot_staff_policy',
+            'snapshot_duration_minutes',
+            'assigned_staff_id',
             'remaining_sessions',
             'remaining_minutes',
             'price_total',
@@ -537,6 +468,12 @@ class StaffPackageController extends Controller
                     'service_name'            => $p->service_name,
                     'snapshot_total_sessions' => $p->snapshot_total_sessions,
                     'snapshot_total_minutes'  => $p->snapshot_total_minutes,
+                    'usage_type'                => $p->snapshot_usage_type,
+                    'minimum_interval_days'      => $p->snapshot_minimum_interval_days,
+                    'deduction_method'           => $p->snapshot_deduction_method,
+                    'staff_policy'               => $p->snapshot_staff_policy,
+                    'assigned_staff_id'          => $p->assigned_staff_id,
+                    'next_allowed_date'          => $p->next_allowed_date,
                     'remaining_sessions'      => $p->remaining_sessions,
                     'remaining_minutes'       => $p->remaining_minutes,
                     'price_total'             => (float) ($p->price_total ?? 0),
@@ -558,35 +495,35 @@ class StaffPackageController extends Controller
     public function logs(Request $request, ServicePackage $package)
     {
         $staff = $request->user()->staff;
-        abort_if(!$staff, 403, 'Not a staff member');
+        abort_if(! $staff, 403, 'Not a staff member');
 
         $logs = PackageLog::query()
             ->where('service_package_id', $package->id)
-            ->orderByDesc('used_at')
+            ->orderByDesc('occurred_on')
+            ->orderByDesc('id')
             ->limit(100)
-            ->get([
-                'id',
-                'service_package_id',
-                'staff_id',
-                'appointment_id',
-                'appointment_ref',
-                'used_sessions',
-                'used_minutes',
-                'used_at',
-                'note',
-            ]);
+            ->get();
 
         return response()->json([
-            'data' => $logs->map(fn ($l) => [
-                'id'              => $l->id,
-                'package_id'      => $l->service_package_id,
-                'staff_id'        => $l->staff_id,
-                'appointment_id'  => $l->appointment_id,
-                'appointment_ref' => $l->appointment_ref,
-                'used_sessions'   => $l->used_sessions,
-                'used_minutes'    => $l->used_minutes,
-                'used_at'         => optional($l->used_at)->toISOString() ?? (string) $l->used_at,
-                'note'            => $l->note,
+            'data' => $logs->map(fn (PackageLog $log) => [
+                'id' => $log->id,
+                'package_id' => $log->service_package_id,
+                'staff_id' => $log->staff_id,
+                'appointment_id' => $log->appointment_id,
+                'appointment_ref' => $log->appointment_ref,
+                'usage_type' => $log->usage_type,
+                'quantity' => $log->quantity,
+                'session_number' => $log->session_number,
+                'used_sessions' => $log->used_sessions,
+                'used_minutes' => $log->used_minutes,
+                'occurred_on' => optional($log->occurred_on)?->toDateString(),
+                'source' => $log->source,
+                'created_by_id' => $log->created_by_id,
+                'used_at' => optional($log->used_at)?->toISOString(),
+                'note' => $log->note,
+                'voided_at' => optional($log->voided_at)?->toISOString(),
+                'voided_by_id' => $log->voided_by_id,
+                'void_reason' => $log->void_reason,
             ]),
         ]);
     }

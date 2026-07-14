@@ -16,6 +16,7 @@ class AssignPackageRequest extends FormRequest
         return [
             'user_id'     => ['required','integer','exists:users,id'],
             'service_id'  => ['required','integer','exists:services,id'],
+            'assigned_staff_id' => ['nullable','integer','exists:staff,id'],
 
             // optional — override price or leave null to use service->price
             'price_total' => ['nullable', 'numeric', 'min:0'],

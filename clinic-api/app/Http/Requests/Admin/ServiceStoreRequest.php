@@ -21,6 +21,13 @@ class ServiceStoreRequest extends FormRequest
             'duration_minutes'      => ['required','integer','min:0','max:1440'], // 0 allowed
             'is_active'             => ['sometimes','boolean'],
             'is_bookable'           => ['sometimes','boolean'],
+            'is_package'            => ['sometimes','boolean'],
+            'usage_type'            => ['sometimes','in:single,session,minutes'],
+            'total_sessions'        => ['nullable','integer','min:1','required_if:usage_type,session'],
+            'total_minutes'         => ['nullable','integer','min:1','required_if:usage_type,minutes'],
+            'minimum_interval_days' => ['sometimes','integer','min:0','max:365'],
+            'deduction_method'      => ['sometimes','in:automatic_on_completion,manual'],
+            'staff_policy'          => ['sometimes','in:per_appointment,same_staff,any_qualified_staff'],
 
             // i18n JSON objects (keys optional: en/sq/mk)
             'name_i18n'                    => ['sometimes','nullable','array'],

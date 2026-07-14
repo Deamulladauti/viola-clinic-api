@@ -2,16 +2,21 @@
 
 namespace App\Models;
 
+use App\Services\PackageUsageService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Carbon;
 
 class ServicePackage extends Model
 {
-    public const STATUS_ACTIVE    = 'active';
+    use SoftDeletes;
+
+    public const STATUS_ACTIVE = 'active';
+    public const STATUS_PAUSED = 'paused';
     public const STATUS_EXHAUSTED = 'exhausted';
-    public const STATUS_EXPIRED   = 'expired';
+    public const STATUS_EXPIRED = 'expired';
     public const STATUS_CANCELLED = 'cancelled';
 
     public const EUR_TO_MKD = 61.6;
@@ -19,9 +24,15 @@ class ServicePackage extends Model
     protected $fillable = [
         'user_id',
         'service_id',
+        'assigned_staff_id',
         'service_name',
         'snapshot_total_sessions',
         'snapshot_total_minutes',
+        'snapshot_usage_type',
+        'snapshot_minimum_interval_days',
+        'snapshot_deduction_method',
+        'snapshot_staff_policy',
+        'snapshot_duration_minutes',
         'price_paid',
         'price_total',
         'currency',
@@ -34,14 +45,16 @@ class ServicePackage extends Model
     ];
 
     protected $casts = [
-        'price_paid'              => 'decimal:2',
-        'price_total'             => 'decimal:2',
-        'remaining_sessions'      => 'integer',
-        'remaining_minutes'       => 'integer',
+        'price_paid' => 'decimal:2',
+        'price_total' => 'decimal:2',
+        'remaining_sessions' => 'integer',
+        'remaining_minutes' => 'integer',
         'snapshot_total_sessions' => 'integer',
-        'snapshot_total_minutes'  => 'integer',
-        'starts_on'               => 'date',
-        'expires_on'              => 'date',
+        'snapshot_total_minutes' => 'integer',
+        'snapshot_minimum_interval_days' => 'integer',
+        'snapshot_duration_minutes' => 'integer',
+        'starts_on' => 'date',
+        'expires_on' => 'date',
     ];
 
     protected $appends = [
@@ -49,9 +62,19 @@ class ServicePackage extends Model
         'amount_paid_mkd',
         'remaining_to_pay',
         'remaining_to_pay_mkd',
+        'next_allowed_date',
     ];
 
-    // ───── RELATIONSHIPS ─────
+    public static function statuses(): array
+    {
+        return [
+            self::STATUS_ACTIVE,
+            self::STATUS_PAUSED,
+            self::STATUS_EXHAUSTED,
+            self::STATUS_EXPIRED,
+            self::STATUS_CANCELLED,
+        ];
+    }
 
     public function user(): BelongsTo
     {
@@ -63,9 +86,19 @@ class ServicePackage extends Model
         return $this->belongsTo(Service::class);
     }
 
+    public function assignedStaff(): BelongsTo
+    {
+        return $this->belongsTo(Staff::class, 'assigned_staff_id');
+    }
+
     public function logs(): HasMany
     {
         return $this->hasMany(PackageLog::class);
+    }
+
+    public function activeUsageLogs(): HasMany
+    {
+        return $this->hasMany(PackageLog::class)->whereNull('voided_at');
     }
 
     public function payments(): HasMany
@@ -78,41 +111,72 @@ class ServicePackage extends Model
         return $this->hasMany(Appointment::class, 'service_package_id');
     }
 
-    // ───── SCOPES ─────
-
-    public function scopeActive($q)
+    public function scopeActive($query)
     {
-        return $q->where('status', self::STATUS_ACTIVE);
+        return $query->where('status', self::STATUS_ACTIVE);
     }
 
-    public function scopeOwnedBy($q, int $userId)
+    public function scopeOwnedBy($query, int $userId)
     {
-        return $q->where('user_id', $userId);
+        return $query->where('user_id', $userId);
     }
 
-    // ───── HELPERS ─────
+    public function usageType(): string
+    {
+        if ($this->snapshot_usage_type) {
+            return $this->snapshot_usage_type;
+        }
+
+        if ($this->remaining_minutes !== null || $this->snapshot_total_minutes !== null) {
+            return Service::USAGE_MINUTES;
+        }
+
+        return Service::USAGE_SESSION;
+    }
+
+    public function deductionMethod(): string
+    {
+        return $this->snapshot_deduction_method
+            ?: ($this->usageType() === Service::USAGE_MINUTES
+                ? Service::DEDUCTION_MANUAL
+                : Service::DEDUCTION_AUTOMATIC);
+    }
+
+    public function staffPolicy(): string
+    {
+        return $this->snapshot_staff_policy
+            ?: ($this->usageType() === Service::USAGE_SESSION
+                ? Service::STAFF_ANY_QUALIFIED
+                : Service::STAFF_PER_APPOINTMENT);
+    }
 
     public function isSessionsType(): bool
     {
-        return !is_null($this->remaining_sessions) && is_null($this->remaining_minutes);
+        return $this->usageType() === Service::USAGE_SESSION;
     }
 
     public function isMinutesType(): bool
     {
-        return !is_null($this->remaining_minutes) && is_null($this->remaining_sessions);
+        return $this->usageType() === Service::USAGE_MINUTES;
+    }
+
+    public function totalUnits(): int
+    {
+        return $this->isMinutesType()
+            ? (int) ($this->snapshot_total_minutes ?? 0)
+            : (int) ($this->snapshot_total_sessions ?? 0);
+    }
+
+    public function remainingUnits(): int
+    {
+        return $this->isMinutesType()
+            ? (int) ($this->remaining_minutes ?? 0)
+            : (int) ($this->remaining_sessions ?? 0);
     }
 
     public function isExhausted(): bool
     {
-        if ($this->isSessionsType()) {
-            return (int) $this->remaining_sessions <= 0;
-        }
-
-        if ($this->isMinutesType()) {
-            return false;
-        }
-
-        return true;
+        return $this->remainingUnits() <= 0;
     }
 
     public function markExhaustedIfNeeded(): void
@@ -123,93 +187,145 @@ class ServicePackage extends Model
         }
     }
 
-    // ───── DEDUCTIONS ─────
+    public function assertUsableOn(Carbon|string|null $date = null): void
+    {
+        $date = $date instanceof Carbon
+            ? $date->copy()->startOfDay()
+            : Carbon::parse($date ?? now())->startOfDay();
 
+        if ($this->status !== self::STATUS_ACTIVE) {
+            throw new \LogicException('Package is not active.');
+        }
+
+        if ($this->starts_on && $date->lt($this->starts_on->copy()->startOfDay())) {
+            throw new \LogicException('Package has not started yet.');
+        }
+
+        if ($this->expires_on && $date->gt($this->expires_on->copy()->startOfDay())) {
+            throw new \LogicException('Package is expired for the selected date.');
+        }
+    }
+
+    public function assertMatchesAppointment(Appointment $appointment): void
+    {
+        if (! $appointment->service_package_id || (int) $appointment->service_package_id !== (int) $this->id) {
+            throw new \LogicException('Appointment is not linked to this package.');
+        }
+
+        if (! $appointment->user_id || (int) $appointment->user_id !== (int) $this->user_id) {
+            throw new \LogicException('Appointment client does not match the package owner.');
+        }
+
+        if ((int) $appointment->service_id !== (int) $this->service_id) {
+            throw new \LogicException('Appointment service does not match the package service.');
+        }
+    }
+
+    public function assertOwnershipForAppointment(Appointment $appointment): void
+    {
+        $this->assertMatchesAppointment($appointment);
+    }
+
+    public function getNextAllowedDateAttribute(): ?string
+    {
+        if (! $this->isSessionsType()) {
+            return null;
+        }
+
+        $interval = (int) ($this->snapshot_minimum_interval_days ?? 0);
+        if ($interval <= 0) {
+            return null;
+        }
+
+        $lastUse = $this->activeUsageLogs()
+            ->where('usage_type', Service::USAGE_SESSION)
+            ->orderByDesc('occurred_on')
+            ->orderByDesc('id')
+            ->first();
+
+        if (! $lastUse?->occurred_on) {
+            return null;
+        }
+
+        return $lastUse->occurred_on->copy()->addDays($interval)->toDateString();
+    }
+
+    /**
+     * @deprecated Session deductions must be tied to a concrete appointment.
+     */
     public function deductSessions(
         int $count = 1,
         ?int $staffId = null,
         ?string $note = null,
         ?string $when = null,
         ?int $appointmentId = null,
-        ?string $appointmentRef = null
+        ?string $appointmentRef = null,
     ): self {
-        if ($count <= 0) {
-            throw new \InvalidArgumentException('used sessions must be > 0');
+        if ($count !== 1 || ! $appointmentId) {
+            throw new \LogicException('Session packages can only deduct one session from a linked completed appointment.');
         }
 
-        if (!$this->isSessionsType()) {
-            throw new \LogicException('This package tracks minutes, not sessions.');
-        }
+        $appointment = Appointment::findOrFail($appointmentId);
 
-        if ($this->status !== self::STATUS_ACTIVE) {
-            throw new \LogicException('Package is not active.');
-        }
+        app(PackageUsageService::class)->recordSessionForAppointment(
+            appointment: $appointment,
+            actorUserId: null,
+            note: $note,
+            source: PackageLog::SOURCE_AUTOMATIC,
+        );
 
-        return \DB::transaction(function () use ($count, $staffId, $note, $when, $appointmentId, $appointmentRef) {
-            $this->refresh();
-
-            if ($this->remaining_sessions < $count) {
-                throw new \LogicException('Not enough remaining sessions.');
-            }
-
-            $this->remaining_sessions -= $count;
-            $this->save();
-
-            $this->logs()->create([
-                'staff_id'        => $staffId,
-                'appointment_id'  => $appointmentId,
-                'appointment_ref' => $appointmentRef,
-                'used_sessions'   => $count,
-                'used_minutes'    => 0,
-                'used_at'         => $when ? Carbon::parse($when) : now(),
-                'note'            => $note,
-            ]);
-
-            $this->markExhaustedIfNeeded();
-
-            return $this;
-        });
+        return $this->refresh();
     }
 
+    /**
+     * @deprecated Use PackageUsageService::recordManualQuantityUsage().
+     */
     public function deductMinutes(
         int $minutes,
         ?int $staffId = null,
         ?string $note = null,
         ?string $when = null,
         ?int $appointmentId = null,
-        ?string $appointmentRef = null
+        ?string $appointmentRef = null,
     ): self {
-        if ($minutes <= 0) {
-            throw new \InvalidArgumentException('used minutes must be > 0');
+        if ($appointmentId) {
+            throw new \LogicException('Minute packages are walk-in usage and cannot be deducted by an appointment.');
         }
 
-        if (!$this->isMinutesType()) {
-            throw new \LogicException('This package tracks sessions, not minutes.');
-        }
+        app(PackageUsageService::class)->recordManualQuantityUsage(
+            package: $this,
+            quantity: $minutes,
+            occurredOn: $when ? Carbon::parse($when)->toDateString() : now()->toDateString(),
+            staffId: $staffId,
+            actorUserId: null,
+            note: $note,
+            source: PackageLog::SOURCE_MANUAL,
+        );
 
-        return \DB::transaction(function () use ($minutes, $staffId, $note, $when, $appointmentId, $appointmentRef) {
-            $this->refresh();
-
-            $this->remaining_minutes = ($this->remaining_minutes ?? 0) - $minutes;
-            $this->save();
-
-            $this->logs()->create([
-                'staff_id'        => $staffId,
-                'appointment_id'  => $appointmentId,
-                'appointment_ref' => $appointmentRef,
-                'used_sessions'   => 0,
-                'used_minutes'    => $minutes,
-                'used_at'         => $when ? Carbon::parse($when) : now(),
-                'note'            => $note,
-            ]);
-
-            $this->markExhaustedIfNeeded();
-
-            return $this;
-        });
+        return $this->refresh();
     }
 
-    // ───── PAYMENTS ─────
+    public function restorePackageDeduction(
+        ?int $appointmentId = null,
+        ?string $appointmentRef = null,
+        ?string $note = null,
+    ): self {
+        $appointment = $appointmentId
+            ? Appointment::find($appointmentId)
+            : Appointment::where('reference_code', $appointmentRef)->first();
+
+        if (! $appointment) {
+            throw new \InvalidArgumentException('A valid appointment is required for usage rollback.');
+        }
+
+        app(PackageUsageService::class)->voidAppointmentUsage(
+            appointment: $appointment,
+            actorUserId: null,
+            reason: $note ?? 'Package usage reversed.',
+        );
+
+        return $this->refresh();
+    }
 
     public function getAmountPaidAttribute(): float
     {
@@ -223,7 +339,7 @@ class ServicePackage extends Model
                 ->notVoided()
                 ->get()
                 ->sum(fn (PackagePayment $payment) => $this->paymentAmountToMkd($payment)),
-            2
+            2,
         );
     }
 
@@ -278,68 +394,5 @@ class ServicePackage extends Model
         }
 
         return $amountMkd;
-    }
-
-    public function assertOwnershipForAppointment(Appointment $appointment): void
-    {
-        if ($appointment->user_id && $appointment->user_id !== $this->user_id) {
-            throw new \LogicException('Ownership mismatch: appointment does not belong to package owner.');
-        }
-    }
-
-    public function restorePackageDeduction(
-        ?int $appointmentId = null,
-        ?string $appointmentRef = null,
-        ?string $note = null
-    ): self {
-        if (!$appointmentId && !$appointmentRef) {
-            throw new \InvalidArgumentException('Appointment ID or reference is required for rollback.');
-        }
-
-        return \DB::transaction(function () use ($appointmentId, $appointmentRef, $note) {
-            $this->refresh();
-
-            $log = $this->logs()
-                ->where(function ($q) use ($appointmentId, $appointmentRef) {
-                    if ($appointmentId) {
-                        $q->where('appointment_id', $appointmentId);
-                    }
-
-                    if ($appointmentRef) {
-                        $q->orWhere('appointment_ref', $appointmentRef);
-                    }
-                })
-                ->where(function ($q) {
-                    $q->where('used_sessions', '>', 0)
-                        ->orWhere('used_minutes', '>', 0);
-                })
-                ->orderByDesc('id')
-                ->first();
-
-            if (!$log) {
-                return $this;
-            }
-
-            if ($log->used_sessions > 0) {
-                $this->remaining_sessions += $log->used_sessions;
-            } elseif ($log->used_minutes > 0) {
-                $this->remaining_minutes += $log->used_minutes;
-            }
-
-            $this->status = self::STATUS_ACTIVE;
-            $this->save();
-
-            $this->logs()->create([
-                'appointment_id'  => $appointmentId,
-                'appointment_ref' => $appointmentRef,
-                'staff_id'        => null,
-                'used_sessions'   => 0,
-                'used_minutes'    => 0,
-                'note'            => $note ?? 'Rollback of previously deducted session(s)',
-                'used_at'         => now(),
-            ]);
-
-            return $this;
-        });
     }
 }

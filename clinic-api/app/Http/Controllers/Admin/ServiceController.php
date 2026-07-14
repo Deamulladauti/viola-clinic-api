@@ -12,6 +12,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\ValidationException;
 
 class ServiceController extends Controller
 {
@@ -116,6 +117,18 @@ class ServiceController extends Controller
             'price' => $service->price,
             'duration_minutes' => $service->duration_minutes,
             'is_active' => $service->is_active,
+            'is_bookable' => $service->is_bookable,
+            'requires_appointment' => $service->requires_appointment,
+            'is_package' => $service->is_package,
+            'usage_type' => $service->usage_type,
+            'included_units' => $service->usage_type === Service::USAGE_MINUTES
+                ? $service->total_minutes
+                : ($service->usage_type === Service::USAGE_SESSION ? $service->total_sessions : 1),
+            'total_sessions' => $service->total_sessions,
+            'total_minutes' => $service->total_minutes,
+            'minimum_interval_days' => $service->minimum_interval_days,
+            'deduction_method' => $service->deduction_method,
+            'staff_policy' => $service->staff_policy,
             'image_url' => $service->image_url,
             'category' => $service->category,
             'tags' => $service->tags,
@@ -143,8 +156,8 @@ class ServiceController extends Controller
         }
 
         // ensure booleans
-        $data['is_active']   = (bool) ($data['is_active']   ?? true);
-        $data['is_bookable'] = (bool) ($data['is_bookable'] ?? true);
+        $data['is_active'] = (bool) ($data['is_active'] ?? true);
+        $data = $this->normalizeBehaviorRules($data);
 
         // slug
         $base = Str::slug($data['slug'] ?? $data['name']);
@@ -263,9 +276,9 @@ public function update(ServiceUpdateRequest $request, int $id)
 
     /*
      * ----- Update base attributes -----
-     * This will also handle i18n arrays because they are in $fillable
-     * (name_i18n, short_description_i18n, description_i18n, prep_instructions, etc.).
+     * Normalize the three supported behaviours while preserving partial updates.
      */
+    $data = $this->normalizeBehaviorRules($data, $service);
     $service->fill($data)->save();
 
     /*
@@ -308,6 +321,80 @@ public function update(ServiceUpdateRequest $request, int $id)
 
         $service->delete();
         return response()->noContent();
+    }
+
+    /**
+     * Normalize legacy service inputs into the three canonical behaviours.
+     * Existing admin forms may still send only is_package/total_* fields.
+     */
+    private function normalizeBehaviorRules(array $data, ?Service $service = null): array
+    {
+        $current = $service?->toArray() ?? [];
+        $merged = array_merge($current, $data);
+
+        $usageType = $data['usage_type'] ?? null;
+        if (! $usageType) {
+            if ((int) ($merged['total_minutes'] ?? 0) > 0) {
+                $usageType = Service::USAGE_MINUTES;
+            } elseif ((bool) ($merged['is_package'] ?? false) || (int) ($merged['total_sessions'] ?? 0) > 1) {
+                $usageType = Service::USAGE_SESSION;
+            } else {
+                $usageType = Service::USAGE_SINGLE;
+            }
+        }
+
+        $data['usage_type'] = $usageType;
+        $data['minimum_interval_days'] = (int) ($merged['minimum_interval_days'] ?? 0);
+
+        if ($usageType === Service::USAGE_SINGLE) {
+            $data['is_package'] = false;
+            $data['is_bookable'] = true;
+            $data['total_sessions'] = null;
+            $data['total_minutes'] = null;
+            $data['minimum_interval_days'] = 0;
+            $data['deduction_method'] = Service::DEDUCTION_AUTOMATIC;
+            $data['staff_policy'] = Service::STAFF_PER_APPOINTMENT;
+
+            return $data;
+        }
+
+        if ($usageType === Service::USAGE_SESSION) {
+            $totalSessions = (int) ($merged['total_sessions'] ?? 0);
+            if ($totalSessions <= 0) {
+                throw ValidationException::withMessages([
+                    'total_sessions' => 'A session package must include at least one session.',
+                ]);
+            }
+
+            $data['is_package'] = true;
+            $data['is_bookable'] = true;
+            $data['total_sessions'] = $totalSessions;
+            $data['total_minutes'] = null;
+            $data['deduction_method'] = Service::DEDUCTION_AUTOMATIC;
+            $policy = $merged['staff_policy'] ?? Service::STAFF_ANY_QUALIFIED;
+            $data['staff_policy'] = in_array($policy, [Service::STAFF_SAME, Service::STAFF_ANY_QUALIFIED], true)
+                ? $policy
+                : Service::STAFF_ANY_QUALIFIED;
+
+            return $data;
+        }
+
+        $totalMinutes = (int) ($merged['total_minutes'] ?? 0);
+        if ($totalMinutes <= 0) {
+            throw ValidationException::withMessages([
+                'total_minutes' => 'A quantity package must include at least one minute.',
+            ]);
+        }
+
+        $data['is_package'] = true;
+        $data['is_bookable'] = false;
+        $data['total_sessions'] = null;
+        $data['total_minutes'] = $totalMinutes;
+        $data['minimum_interval_days'] = 0;
+        $data['deduction_method'] = Service::DEDUCTION_MANUAL;
+        $data['staff_policy'] = Service::STAFF_ANY_QUALIFIED;
+
+        return $data;
     }
 
     /**

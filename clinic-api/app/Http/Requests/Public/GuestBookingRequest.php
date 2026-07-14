@@ -16,7 +16,8 @@ class GuestBookingRequest extends FormRequest
         return [
             'date'        => ['required', 'date_format:Y-m-d'],
             'starts_at'   => ['required', 'date_format:H:i:s'],
-            'staff_id'   => ['sometimes','integer','exists:staff,id'],
+            'staff_id' => ['sometimes','integer','exists:staff,id'],
+            'service_package_id' => ['sometimes','nullable','integer','exists:service_packages,id'],
             'notes' => ['nullable', 'string', 'max:500'],
             // no status from guests; defaults to pending
         ];

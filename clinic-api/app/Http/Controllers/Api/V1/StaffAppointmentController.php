@@ -15,6 +15,7 @@ use App\Models\AppointmentLog;
 use App\Models\Staff;
 use App\Models\Service;
 use App\Models\User;
+use App\Services\AppointmentCompletionService;
 use Illuminate\Support\Str;
 
 /**
@@ -605,60 +606,77 @@ class StaffAppointmentController extends Controller
     /**
      * Shared logic for staff updates (status + notes + package deduction + logs).
      */
-    private function applyStaffUpdate(Appointment $a, array $data): void
+    private function applyStaffUpdate(Appointment $appointment, array $data): void
     {
-        $originalStatus = $a->status;
+        $originalStatus = $appointment->status;
+        $nextStatus = $data['status'] ?? $originalStatus;
 
         if (array_key_exists('status', $data)) {
-            $next = $data['status'];
-
             $allowed = match ($originalStatus) {
-                'pending'   => ['pending','confirmed','cancelled','no_show'],
-                'confirmed' => ['confirmed','completed','cancelled','no_show'],
-                'completed' => ['completed'],   // immutable
-                'cancelled' => ['cancelled'],   // immutable
-                'no_show'   => ['no_show'],     // immutable
-                default     => [],
+                Appointment::STATUS_PENDING => [
+                    Appointment::STATUS_PENDING,
+                    Appointment::STATUS_CONFIRMED,
+                    Appointment::STATUS_CANCELLED,
+                    Appointment::STATUS_NO_SHOW,
+                ],
+                Appointment::STATUS_CONFIRMED => [
+                    Appointment::STATUS_CONFIRMED,
+                    Appointment::STATUS_COMPLETED,
+                    Appointment::STATUS_CANCELLED,
+                    Appointment::STATUS_NO_SHOW,
+                ],
+                Appointment::STATUS_COMPLETED => [Appointment::STATUS_COMPLETED],
+                Appointment::STATUS_CANCELLED => [Appointment::STATUS_CANCELLED],
+                Appointment::STATUS_NO_SHOW => [Appointment::STATUS_NO_SHOW],
+                default => [],
             };
 
-            if (!in_array($next, $allowed, true)) {
+            if (! in_array($nextStatus, $allowed, true)) {
                 abort(422, 'Invalid status transition');
             }
         }
 
-        DB::transaction(function () use ($a, $data, $originalStatus) {
+        if ($originalStatus !== Appointment::STATUS_COMPLETED && $nextStatus === Appointment::STATUS_COMPLETED) {
+            app(AppointmentCompletionService::class)->complete(
+                appointment: $appointment,
+                actorUserId: optional(request()->user())->id,
+                note: $data['notes'] ?? null,
+                source: \App\Models\PackageLog::SOURCE_AUTOMATIC,
+            );
+
+            return;
+        }
+
+        DB::transaction(function () use ($appointment, $data, $originalStatus) {
             if (array_key_exists('notes', $data)) {
-                $a->notes = $data['notes'];
+                $appointment->notes = $data['notes'];
             }
+
             if (array_key_exists('status', $data)) {
-                $a->status = $data['status'];
+                $appointment->status = $data['status'];
             }
-            $a->save();
 
-            // log status change
-            if ($a->wasChanged('status')) {
+            $appointment->save();
+
+            if ($appointment->wasChanged('status')) {
                 AppointmentLog::create([
-                    'appointment_id' => $a->id,
-                    'action'         => 'status_changed',
-                    'meta'           => json_encode([
+                    'appointment_id' => $appointment->id,
+                    'user_id' => optional(request()->user())->id,
+                    'action' => 'status_changed',
+                    'meta' => [
                         'from' => $originalStatus,
-                        'to'   => $a->status,
-                    ]),
+                        'to' => $appointment->status,
+                    ],
                 ]);
             }
 
-            // log notes update
-            if ($a->wasChanged('notes')) {
+            if ($appointment->wasChanged('notes')) {
                 AppointmentLog::create([
-                    'appointment_id' => $a->id,
-                    'action'         => 'notes_updated',
-                    'meta'           => json_encode(['notes' => $a->notes]),
+                    'appointment_id' => $appointment->id,
+                    'user_id' => optional(request()->user())->id,
+                    'action' => 'notes_updated',
+                    'meta' => ['notes' => $appointment->notes],
                 ]);
-            }
-
-            // package deduction only on transition TO completed (once)
-            if ($originalStatus !== 'completed' && $a->status === 'completed') {
-                $this->deductPackageIfNeeded($a);
             }
         });
     }
@@ -868,62 +886,4 @@ class StaffAppointmentController extends Controller
     }
 
 
-    /**
-     * Deduct from linked package if eligible. Mirrors Admin logic in a safe way.
-     */
-    private function deductPackageIfNeeded(Appointment $a): void
-    {
-        if (!$a->service_package_id) {
-            return;
-        }
-
-        // has a previous 'package_deducted' log?
-        $already = AppointmentLog::where('appointment_id', $a->id)
-            ->where('action', 'package_deducted')
-            ->exists();
-        if ($already) {
-            return;
-        }
-
-        $pkg = ServicePackage::lockForUpdate()->find($a->service_package_id);
-        if (!$pkg || $pkg->status !== 'active') {
-            return;
-        }
-
-        $changed = false;
-
-        if (!is_null($pkg->remaining_sessions)) {
-            if ($pkg->remaining_sessions > 0) {
-                $pkg->remaining_sessions -= 1;
-                $changed = true;
-            }
-        } elseif (!is_null($pkg->remaining_minutes)) {
-            $mins = (int) $a->duration_minutes;
-            if ($mins > 0 && $pkg->remaining_minutes > 0) {
-                $pkg->remaining_minutes = max(0, $pkg->remaining_minutes - $mins);
-                $changed = true;
-            }
-        }
-
-        if ($changed) {
-            // auto-mark used if depleted
-            if (
-                (!is_null($pkg->remaining_sessions) && $pkg->remaining_sessions <= 0) ||
-                (!is_null($pkg->remaining_minutes)  && $pkg->remaining_minutes <= 0)
-            ) {
-                $pkg->status = 'used';
-            }
-            $pkg->save();
-
-            AppointmentLog::create([
-                'appointment_id' => $a->id,
-                'action'         => 'package_deducted',
-                'meta'           => json_encode([
-                    'package_id'         => $pkg->id,
-                    'remaining_sessions' => $pkg->remaining_sessions,
-                    'remaining_minutes'  => $pkg->remaining_minutes,
-                ]),
-            ]);
-        }
-    }
 }

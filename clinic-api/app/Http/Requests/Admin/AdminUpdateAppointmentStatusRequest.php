@@ -16,6 +16,7 @@ class AdminUpdateAppointmentStatusRequest extends FormRequest
         return [
             'status' => ['required', 'in:pending,confirmed,cancelled,completed,no_show'],
             'notes'  => ['nullable', 'string', 'max:10000'],
+            'reason' => ['nullable', 'string', 'max:2000'],
         ];
     }
 }

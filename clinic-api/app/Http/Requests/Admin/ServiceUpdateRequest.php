@@ -26,6 +26,13 @@ class ServiceUpdateRequest extends FormRequest
             'duration_minutes'      => ['sometimes','integer','min:0','max:1440'],
             'is_active'             => ['sometimes','boolean'],
             'is_bookable'           => ['sometimes','boolean'],
+            'is_package'            => ['sometimes','boolean'],
+            'usage_type'            => ['sometimes','in:single,session,minutes'],
+            'total_sessions'        => ['sometimes','nullable','integer','min:1'],
+            'total_minutes'         => ['sometimes','nullable','integer','min:1'],
+            'minimum_interval_days' => ['sometimes','integer','min:0','max:365'],
+            'deduction_method'      => ['sometimes','in:automatic_on_completion,manual'],
+            'staff_policy'          => ['sometimes','in:per_appointment,same_staff,any_qualified_staff'],
 
             // i18n
             'name_i18n'                    => ['sometimes','nullable','array'],

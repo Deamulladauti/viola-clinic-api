@@ -16,12 +16,14 @@ class AppointmentStoreRequest extends FormRequest
     {
         return [
             // --- Core references ---
-            'service_id'       => ['required', 'integer', 'exists:services,id'],
-            'staff_id'         => ['nullable', 'integer', 'exists:staff,id'],
+            'service_id'         => ['required', 'integer', 'exists:services,id'],
+            'service_package_id' => ['nullable', 'integer', 'exists:service_packages,id'],
+            'staff_id'           => ['nullable', 'integer', 'exists:staff,id'],
+            'user_id'            => ['nullable', 'integer', 'exists:users,id'],
 
             // --- Timing ---
             'date'             => ['required', 'date_format:Y-m-d'],
-            'starts_at'        => ['required', 'date_format:H:i:s'],
+            'starts_at'        => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/'],
             'duration_minutes' => ['required', 'integer', 'min:5', 'max:480'],
 
             // --- Pricing ---
@@ -34,6 +36,7 @@ class AppointmentStoreRequest extends FormRequest
 
             // --- Status & notes ---
             'status'           => ['required', 'in:pending,confirmed,cancelled,completed,no_show'],
+            'source'           => ['sometimes', 'in:client_booking,admin_booking,manual_import,legacy'],
             'notes'            => ['nullable', 'string', 'max:10000'],
         ];
     }

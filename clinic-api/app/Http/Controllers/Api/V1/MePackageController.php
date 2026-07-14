@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\ServicePackage;
+use App\Models\PackageLog;
 use Illuminate\Http\Request;
 
 class MePackageController extends Controller
@@ -51,9 +52,16 @@ class MePackageController extends Controller
             'remaining_payment' => (float) $p->remaining_to_pay,
             'currency'          => $p->currency,
 
+            'usage_type' => $p->usageType(),
+            'total_units' => $p->totalUnits(),
+            'remaining_units' => $p->remainingUnits(),
             'remaining_sessions' => $p->remaining_sessions,
-            'remaining_minutes'  => $p->remaining_minutes,
-            'is_exhausted'       => $p->isExhausted(),
+            'remaining_minutes' => $p->remaining_minutes,
+            'minimum_interval_days' => (int) ($p->snapshot_minimum_interval_days ?? 0),
+            'staff_policy' => $p->staffPolicy(),
+            'assigned_staff_id' => $p->assigned_staff_id,
+            'next_allowed_date' => $p->next_allowed_date,
+            'is_exhausted' => $p->isExhausted(),
         ];
     });
 
@@ -77,7 +85,7 @@ class MePackageController extends Controller
         }
 
         $package->load(['service:id,name,slug', 'logs' => function ($q) {
-            $q->latest('used_at')->limit(20);
+            $q->orderByDesc('occurred_on')->orderByDesc('id')->limit(20);
         }]);
 
         return response()->json([
@@ -97,19 +105,32 @@ class MePackageController extends Controller
                 'remaining_payment' => (float) $package->remaining_to_pay,
                 'currency'          => $package->currency,
 
+                'usage_type' => $package->usageType(),
+                'total_units' => $package->totalUnits(),
+                'remaining_units' => $package->remainingUnits(),
                 'remaining_sessions' => $package->remaining_sessions,
-                'remaining_minutes'  => $package->remaining_minutes,
-                'snapshot'           => [
+                'remaining_minutes' => $package->remaining_minutes,
+                'minimum_interval_days' => (int) ($package->snapshot_minimum_interval_days ?? 0),
+                'deduction_method' => $package->deductionMethod(),
+                'staff_policy' => $package->staffPolicy(),
+                'assigned_staff_id' => $package->assigned_staff_id,
+                'next_allowed_date' => $package->next_allowed_date,
+                'snapshot' => [
                     'sessions' => $package->snapshot_total_sessions,
-                    'minutes'  => $package->snapshot_total_minutes,
+                    'minutes' => $package->snapshot_total_minutes,
+                    'duration_minutes' => $package->snapshot_duration_minutes,
                 ],
-                'logs'               => $package->logs->map(fn($log) => [
-                    'id'            => $log->id,
-                    'used_sessions' => $log->used_sessions,
-                    'used_minutes'  => $log->used_minutes,
-                    'used_at'       => optional($log->used_at)?->toDateTimeString(),
-                    'staff_id'      => $log->staff_id,
-                    'note'          => $log->note,
+                'logs' => $package->logs->map(fn (PackageLog $log) => [
+                    'id' => $log->id,
+                    'usage_type' => $log->usage_type,
+                    'quantity' => $log->quantity,
+                    'session_number' => $log->session_number,
+                    'occurred_on' => optional($log->occurred_on)?->toDateString(),
+                    'source' => $log->source,
+                    'staff_id' => $log->staff_id,
+                    'appointment_id' => $log->appointment_id,
+                    'note' => $log->note,
+                    'voided_at' => optional($log->voided_at)?->toDateTimeString(),
                 ]),
             ],
         ]);

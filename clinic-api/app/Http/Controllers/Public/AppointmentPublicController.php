@@ -12,6 +12,8 @@ use App\Models\ServicePackage; // ✅ add import
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use App\Events\AppointmentBookedEvent;
 
 class AppointmentPublicController extends Controller
@@ -151,42 +153,36 @@ class AppointmentPublicController extends Controller
         ]);
     }
 
-    // 9C-2 — Guest booking (public)
+    // 9C-2 — Authenticated client booking
     public function guestBook(GuestBookingRequest $request, Service $service)
     {
-        // ✅ Require authenticated user
         $user = $request->user();
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Authentication required'], 401);
         }
 
-        // Guard: service must be publicly bookable
-        if (!$service->is_active || !$service->is_bookable) {
-            return response()->json(['message' => 'Service not available'], 404);
+        if (! $service->is_active || ! $service->is_bookable || $service->isQuantityPackage()) {
+            return response()->json(['message' => 'Service not available for appointments'], 404);
         }
 
-        // === Business rules & config ===
         date_default_timezone_set(config('clinic.timezone', config('app.timezone')));
         $workdayStartStr = (string) config('clinic.workday.start', $this->workdayStart);
-        $workdayEndStr   = (string) config('clinic.workday.end',   $this->workdayEnd);
-        $minNotice       = (int) config('clinic.min_notice_minutes', 10);
+        $workdayEndStr = (string) config('clinic.workday.end', $this->workdayEnd);
+        $minNotice = (int) config('clinic.min_notice_minutes', 10);
 
-        // === Inputs ===
-        $v        = $request->validated();
-        $date     = trim($v['date']);        // 'Y-m-d'
-        $startsAt = trim($v['starts_at']);   // 'H:i:s'
-        $staffId  = (int) ($v['staff_id'] ?? 0);
+        $v = $request->validated();
+        $date = trim($v['date']);
+        $startsAt = trim($v['starts_at']);
+        $staffId = (int) ($v['staff_id'] ?? 0);
+        $requestedPackageId = isset($v['service_package_id']) ? (int) $v['service_package_id'] : null;
 
-        // === Service snapshot at booking time ===
         $duration = (int) ($service->duration_minutes ?? 60);
-        $price    = (float) ($service->price ?? 0);
+        $price = (float) ($service->price ?? 0);
 
-        // === Time window checks ===
         $workdayStart = Carbon::createFromFormat('Y-m-d H:i:s', $date.' '.$workdayStartStr);
-        $workdayEnd   = Carbon::createFromFormat('Y-m-d H:i:s', $date.' '.$workdayEndStr);
-
+        $workdayEnd = Carbon::createFromFormat('Y-m-d H:i:s', $date.' '.$workdayEndStr);
         $slotStart = Carbon::createFromFormat('Y-m-d H:i:s', $date.' '.$startsAt);
-        $slotEnd   = (clone $slotStart)->addMinutes($duration);
+        $slotEnd = (clone $slotStart)->addMinutes($duration);
 
         if ($slotStart->lt($workdayStart) || $slotEnd->gt($workdayEnd)) {
             return response()->json(['message' => 'Selected time is outside working hours.'], 422);
@@ -202,19 +198,71 @@ class AppointmentPublicController extends Controller
             return response()->json(['message' => "Please book at least {$minNotice} minutes in advance."], 422);
         }
 
-        // === Staff selection ===
-        $assignedStaff = null;
+        $selectedPackage = null;
+        $createPackage = false;
 
+        if ($service->isSessionPackage()) {
+            if ($requestedPackageId) {
+                $selectedPackage = ServicePackage::query()
+                    ->whereKey($requestedPackageId)
+                    ->where('user_id', $user->id)
+                    ->where('service_id', $service->id)
+                    ->first();
+
+                if (! $selectedPackage) {
+                    throw ValidationException::withMessages([
+                        'service_package_id' => 'The selected package does not belong to you or is for another service.',
+                    ]);
+                }
+            } else {
+                $availablePackages = ServicePackage::query()
+                    ->where('user_id', $user->id)
+                    ->where('service_id', $service->id)
+                    ->where('status', ServicePackage::STATUS_ACTIVE)
+                    ->where('remaining_sessions', '>', 0)
+                    ->orderBy('starts_on')
+                    ->orderBy('id')
+                    ->get();
+
+                if ($availablePackages->count() > 1) {
+                    throw ValidationException::withMessages([
+                        'service_package_id' => 'You have multiple active packages for this service. Select the exact package to use.',
+                    ]);
+                }
+
+                $selectedPackage = $availablePackages->first();
+                $createPackage = ! $selectedPackage;
+            }
+
+            if ($selectedPackage) {
+                $this->assertPackageCanBeBooked($selectedPackage, $service, $user->id, $date);
+
+                if ($selectedPackage->staffPolicy() === Service::STAFF_SAME && $selectedPackage->assigned_staff_id) {
+                    if ($staffId && $staffId !== (int) $selectedPackage->assigned_staff_id) {
+                        throw ValidationException::withMessages([
+                            'staff_id' => 'This package is assigned to a different staff member.',
+                        ]);
+                    }
+                    $staffId = (int) $selectedPackage->assigned_staff_id;
+                }
+            }
+        } elseif ($requestedPackageId) {
+            throw ValidationException::withMessages([
+                'service_package_id' => 'Single appointments cannot be linked to a package.',
+            ]);
+        }
+
+        $assignedStaff = null;
         if ($staffId) {
             $st = Staff::where('is_active', true)->find($staffId);
-            if (!$st || !$this->staffCoversService($st, $service->id)) {
+            if (! $st || ! $this->staffCoversService($st, $service->id)) {
                 return response()->json(['message' => 'Selected staff is not available for this service.'], 422);
             }
 
             if (
-                !$this->staffWorksWindow($st, $date, $startsAt, $slotEnd->format('H:i:s')) ||
-                !$this->staffHasNoOverlap($st, $date, $startsAt, $duration) ||
-                !$this->serviceHasNoOverlap($service->id, $date, $startsAt, $duration)
+                ! $this->staffWorksWindow($st, $date, $startsAt, $slotEnd->format('H:i:s')) ||
+                ! $this->staffHasNoOverlap($st, $date, $startsAt, $duration) ||
+                ! $this->serviceHasNoOverlap($service->id, $date, $startsAt, $duration)
             ) {
                 return response()->json(['message' => 'Selected staff is not free at that time.'], 422);
             }
@@ -222,7 +270,7 @@ class AppointmentPublicController extends Controller
             $assignedStaff = $st;
         } else {
             $candidates = Staff::where('is_active', true)
-                ->whereHas('services', fn($q) => $q->where('services.id', $service->id))
+                ->whereHas('services', fn ($q) => $q->where('services.id', $service->id))
                 ->get();
 
             foreach ($candidates as $st) {
@@ -236,113 +284,181 @@ class AppointmentPublicController extends Controller
                 }
             }
 
-            if (!$assignedStaff) {
+            if (! $assignedStaff) {
                 return response()->json(['message' => 'No staff available for that time.'], 422);
             }
         }
 
-        // === Idempotency (best-effort) ===
         $idem = $request->header('Idempotency-Key');
         if ($idem) {
             $existing = Appointment::query()
+                ->where('user_id', $user->id)
                 ->where('service_id', $service->id)
                 ->where('staff_id', $assignedStaff->id)
                 ->whereDate('date', $date)
                 ->where('starts_at', $startsAt)
-                ->whereIn('status', ['pending','confirmed'])
+                ->whereIn('status', [Appointment::STATUS_PENDING, Appointment::STATUS_CONFIRMED])
                 ->first();
 
             if ($existing) {
-                $existing->loadMissing(['service','client','staff.user']);
+                $existing->loadMissing(['service', 'client', 'staff.user', 'package']);
 
                 return response()->json([
-                    'message'     => 'Appointment booked',
+                    'message' => 'Appointment booked',
                     'appointment' => $this->presentAppointment($existing),
-                    'idempotent'  => true,
+                    'idempotent' => true,
                 ], 201);
             }
         }
 
-        // === Create appointment ===
-        $code = $this->newReferenceCode();
+        $appt = DB::transaction(function () use (
+            $service,
+            $user,
+            $selectedPackage,
+            $createPackage,
+            $assignedStaff,
+            $date,
+            $startsAt,
+            $duration,
+            $price,
+            $v
+        ) {
+            $package = null;
 
-        $appt = Appointment::create([
-            'service_id'       => $service->id,
-            'staff_id'         => $assignedStaff->id,
-            'user_id'          => $user->id,
-            'date'             => $date,
-            'starts_at'        => $startsAt,
-            'duration_minutes' => $duration,
-            'price'            => $price, // For display; package billing lives on ServicePackage for bundles
-            'customer_name'    => $user->name  ?? ($v['customer_name']  ?? null),
-            'customer_email'   => $user->email ?? ($v['customer_email'] ?? null),
-            'customer_phone'   => $user->phone ?? ($v['customer_phone'] ?? null),
-            'status'           => Appointment::STATUS_PENDING,
-            'notes'            => $v['notes'] ?? null,
-            'reference_code'   => $code,
-        ]);
+            if ($service->isSessionPackage()) {
+                if ($createPackage) {
+                    $totalSessions = (int) $service->total_sessions;
+                    if ($totalSessions <= 0) {
+                        throw ValidationException::withMessages([
+                            'service' => 'This package does not have included sessions configured.',
+                        ]);
+                    }
 
-        // === PACKAGE LOGIC: create or attach (sessions packages only) ===
+                    $package = ServicePackage::create([
+                        'user_id' => $user->id,
+                        'service_id' => $service->id,
+                        'assigned_staff_id' => $service->staff_policy === Service::STAFF_SAME
+                            ? $assignedStaff->id
+                            : null,
+                        'service_name' => $service->name,
+                        'snapshot_total_sessions' => $totalSessions,
+                        'snapshot_total_minutes' => null,
+                        'snapshot_usage_type' => Service::USAGE_SESSION,
+                        'snapshot_minimum_interval_days' => (int) ($service->minimum_interval_days ?? 0),
+                        'snapshot_deduction_method' => $service->deduction_method ?: Service::DEDUCTION_AUTOMATIC,
+                        'snapshot_staff_policy' => $service->staff_policy ?: Service::STAFF_ANY_QUALIFIED,
+                        'snapshot_duration_minutes' => $service->duration_minutes,
+                        'remaining_sessions' => $totalSessions,
+                        'remaining_minutes' => null,
+                        'price_total' => $service->price,
+                        'price_paid' => 0,
+                        'currency' => 'EUR',
+                        'status' => ServicePackage::STATUS_ACTIVE,
+                        'starts_on' => now()->toDateString(),
+                        'expires_on' => null,
+                        'notes' => 'Created from client booking',
+                    ]);
+                } else {
+                    $package = ServicePackage::query()
+                        ->lockForUpdate()
+                        ->findOrFail($selectedPackage->id);
 
-        // We only apply package logic when:
-        // - service is marked as package
-        // - it has total_sessions > 0 (Laser, 6 sessions, etc.)
-        // - it is bookable (normal calendar appointment)
-        $isSessionPackage = ($service->is_package && $service->is_bookable && ($service->total_sessions ?? 0) > 0);
+                    $this->assertPackageCanBeBooked($package, $service, $user->id, $date);
 
-        if ($isSessionPackage) {
-            // 1) Find oldest active package with remaining sessions for this user + service
-            $pkg = ServicePackage::query()
-                ->where('user_id', $user->id)
-                ->where('service_id', $service->id)
-                ->where('status', ServicePackage::STATUS_ACTIVE)
-                ->whereNotNull('remaining_sessions')
-                ->where('remaining_sessions', '>', 0)
-                ->orderBy('starts_on')       // oldest by start date
-                ->orderBy('created_at')      // tie-breaker
-                ->first();
+                    $reservedSessions = Appointment::query()
+                        ->where('service_package_id', $package->id)
+                        ->whereIn('status', [Appointment::STATUS_PENDING, Appointment::STATUS_CONFIRMED])
+                        ->count();
 
-            // 2) If no active package, create a new one for this booking
-            if (!$pkg) {
-                $totalSessions = (int) ($service->total_sessions ?? 0);
+                    if ($reservedSessions >= (int) $package->remaining_sessions) {
+                        throw ValidationException::withMessages([
+                            'service_package_id' => 'All remaining sessions in this package are already booked.',
+                        ]);
+                    }
 
-                $pkg = ServicePackage::create([
-                    'user_id'                 => $user->id,
-                    'service_id'              => $service->id,
-                    'service_name'            => $service->name,
+                    if ($package->staffPolicy() === Service::STAFF_SAME) {
+                        if ($package->assigned_staff_id && (int) $package->assigned_staff_id !== (int) $assignedStaff->id) {
+                            throw ValidationException::withMessages([
+                                'staff_id' => 'This package is assigned to a different staff member.',
+                            ]);
+                        }
 
-                    'snapshot_total_sessions' => $totalSessions,
-                    'snapshot_total_minutes'  => null,
-                    'remaining_sessions'      => $totalSessions,
-                    'remaining_minutes'       => null,
-
-                    'price_total'             => $service->price, // full package value, e.g. 450€
-                    'price_paid'              => $service->price, // legacy mirror if you still use it
-                    'currency'                => 'EUR',           // or pull from config
-
-                    'status'                  => ServicePackage::STATUS_ACTIVE,
-                    'starts_on'               => now()->toDateString(),
-                    'expires_on'              => null,
-                    'notes'                   => 'Auto-created from online booking',
-                ]);
+                        if (! $package->assigned_staff_id) {
+                            $package->assigned_staff_id = $assignedStaff->id;
+                            $package->save();
+                        }
+                    }
+                }
             }
 
-            // 3) Attach appointment to the chosen package
-            $appt->service_package_id = $pkg->id;
-            $appt->save();
-        }
+            return Appointment::create([
+                'service_id' => $service->id,
+                'service_package_id' => $package?->id,
+                'staff_id' => $assignedStaff->id,
+                'user_id' => $user->id,
+                'date' => $date,
+                'starts_at' => $startsAt,
+                'duration_minutes' => $duration,
+                'price' => $price,
+                'customer_name' => $user->name ?? ($v['customer_name'] ?? null),
+                'customer_email' => $user->email ?? ($v['customer_email'] ?? null),
+                'customer_phone' => $user->phone ?? ($v['customer_phone'] ?? null),
+                'status' => Appointment::STATUS_PENDING,
+                'source' => Appointment::SOURCE_CLIENT_BOOKING,
+                'notes' => $v['notes'] ?? null,
+                'reference_code' => $this->newReferenceCode(),
+            ]);
+        });
 
-        // === Events & response ===
-        $appt->loadMissing(['service','client','staff.user']);
+        $appt->loadMissing(['service', 'client', 'staff.user', 'package']);
         event(new AppointmentBookedEvent($appt));
         if (class_exists(\App\Events\AppointmentBooked::class)) {
             event(new \App\Events\AppointmentBooked($appt));
         }
 
         return response()->json([
-            'message'     => 'Appointment booked',
+            'message' => 'Appointment booked',
             'appointment' => $this->presentAppointment($appt),
         ], 201);
+    }
+
+    private function assertPackageCanBeBooked(
+        ServicePackage $package,
+        Service $service,
+        int $userId,
+        string $date,
+    ): void {
+        if ((int) $package->user_id !== $userId || (int) $package->service_id !== (int) $service->id) {
+            throw ValidationException::withMessages([
+                'service_package_id' => 'The selected package does not match this client and service.',
+            ]);
+        }
+
+        try {
+            $package->assertUsableOn($date);
+        } catch (\LogicException $exception) {
+            throw ValidationException::withMessages([
+                'service_package_id' => $exception->getMessage(),
+            ]);
+        }
+
+        if (! $package->isSessionsType() || $package->deductionMethod() !== Service::DEDUCTION_AUTOMATIC) {
+            throw ValidationException::withMessages([
+                'service_package_id' => 'Only automatic session packages can be used for appointments.',
+            ]);
+        }
+
+        if ((int) $package->remaining_sessions <= 0) {
+            throw ValidationException::withMessages([
+                'service_package_id' => 'This package has no sessions remaining.',
+            ]);
+        }
+
+        if ($package->next_allowed_date && Carbon::parse($date)->lt(Carbon::parse($package->next_allowed_date))) {
+            throw ValidationException::withMessages([
+                'date' => "The next package session is allowed from {$package->next_allowed_date}.",
+            ]);
+        }
     }
 
     /**
@@ -360,6 +476,8 @@ class AppointmentPublicController extends Controller
         return [
             'id'               => $a->id,
             'reference_code'   => $a->reference_code,
+            'service_package_id' => $a->service_package_id,
+            'source'             => $a->source,
             'service'          => [
                 'id'   => $a->service?->id,
                 'name' => $a->service?->name,
