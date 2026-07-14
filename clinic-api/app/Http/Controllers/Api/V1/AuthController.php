@@ -3,56 +3,67 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Auth\RegisterRequest;
 use App\Http\Requests\Auth\LoginRequest;
+use App\Http\Requests\Auth\RegisterRequest;
 use App\Http\Resources\UserResource;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
 {
-    // POST /api/v1/auth/register
+    /**
+     * POST /api/v1/auth/register
+     */
     public function register(RegisterRequest $request)
     {
         $data = $request->validated();
 
-        // Normalize email to lowercase if provided
-        if (!empty($data['email'])) {
-            $data['email'] = strtolower($data['email']);
+        $data['name'] = trim($data['name']);
+        $data['phone'] = trim($data['phone']);
+
+        if (! empty($data['email'])) {
+            $data['email'] = mb_strtolower(trim($data['email']));
         }
 
-        // Check if a user with this phone already exists (pre-created user logic)
-        $existing = User::where('phone', $data['phone'])->first();
+        /*
+         * Find a pre-created client even if the phone was saved with
+         * spaces, dashes, brackets, or a leading plus sign.
+         */
+        $existing = $this->findUserByPhone($data['phone']);
 
         if ($existing) {
-            // If the existing user already has a password, treat as fully registered
-            if (!empty($existing->password)) {
+            /*
+             * A password means the account has already completed registration.
+             */
+            if (! empty($existing->password)) {
                 return response()->json([
                     'message' => 'An account with this phone already exists. Please log in or reset your password.',
-                    'code'    => 'PHONE_ALREADY_REGISTERED',
+                    'code' => 'PHONE_ALREADY_REGISTERED',
                 ], 409);
             }
 
-            // Upgrade pre-created user
-            $existing->name     = $data['name'];
-            $existing->email    = $data['email'] ?? $existing->email;
-            $existing->password = Hash::make($data['password']);
+            /*
+             * Upgrade the admin-created client into a registered account.
+             */
+            $existing->name = $data['name'];
+            $existing->phone = $data['phone'];
+            $existing->email = $data['email'] ?? $existing->email;
+            $existing->password = $data['password'];
             $existing->save();
 
             $user = $existing;
         } else {
-            // Create a brand new user
             $user = User::create([
-                'name'     => $data['name'],
-                'email'    => $data['email'] ?? null,
-                'phone'    => $data['phone'],
-                'password' => Hash::make($data['password']),
+                'name' => $data['name'],
+                'email' => $data['email'] ?? null,
+                'phone' => $data['phone'],
+                'password' => $data['password'],
             ]);
         }
 
-        // Ensure client role
-        if (method_exists($user, 'assignRole') && ! $user->hasRole('client')) {
+        if (! $user->hasRole('client')) {
             $user->assignRole('client');
         }
 
@@ -61,34 +72,44 @@ class AuthController extends Controller
         $token = $user->createToken('mobile')->plainTextToken;
 
         return response()->json([
-            'token'     => $token,
+            'token' => $token,
             'tokenType' => 'Bearer',
-            'user'      => new UserResource($user),
+            'user' => new UserResource($user),
         ], 201);
     }
 
-    // POST /api/v1/auth/login
+    /**
+     * POST /api/v1/auth/login
+     */
     public function login(LoginRequest $request)
     {
         $data = $request->validated();
 
-        $identifier = $data['identifier'];
-        $password   = $data['password'];
+        $identifier = trim($data['identifier']);
+        $password = $data['password'];
 
-        // Allow login by phone OR email (case-insensitive for email)
         if (str_contains($identifier, '@')) {
-            // Treat as email
-            $user = User::whereRaw('LOWER(email) = ?', [strtolower($identifier)])
-                        ->first();
+            $user = User::query()
+                ->whereRaw(
+                    'LOWER(email) = ?',
+                    [mb_strtolower($identifier)]
+                )
+                ->first();
         } else {
-            // Treat as phone
-            $user = User::where('phone', $identifier)->first();
+            $user = $this->findUserByPhone($identifier);
         }
 
-        if (! $user || ! Hash::check($password, $user->password)) {
+        /*
+         * Admin-created clients have a null password until registration.
+         */
+        if (
+            ! $user ||
+            empty($user->password) ||
+            ! Hash::check($password, $user->password)
+        ) {
             return response()->json([
                 'message' => 'Invalid credentials',
-                'code'    => 'INVALID_CREDENTIALS',
+                'code' => 'INVALID_CREDENTIALS',
             ], 401);
         }
 
@@ -97,13 +118,15 @@ class AuthController extends Controller
         $token = $user->createToken('mobile')->plainTextToken;
 
         return response()->json([
-            'token'     => $token,
+            'token' => $token,
             'tokenType' => 'Bearer',
-            'user'      => new UserResource($user),
+            'user' => new UserResource($user),
         ]);
     }
 
-    // GET /api/v1/auth/me
+    /**
+     * GET /api/v1/auth/me
+     */
     public function me(Request $request)
     {
         $user = $request->user()->loadMissing('roles');
@@ -113,11 +136,46 @@ class AuthController extends Controller
         ]);
     }
 
-    // POST /api/v1/auth/logout
+    /**
+     * POST /api/v1/auth/logout
+     */
     public function logout(Request $request)
     {
         $request->user()->currentAccessToken()?->delete();
 
         return response()->noContent();
+    }
+
+    /**
+     * Find a user by phone while ignoring formatting characters.
+     */
+    private function findUserByPhone(string $phone): ?User
+    {
+        $raw = trim($phone);
+        $digits = $this->phoneDigits($raw);
+
+        return User::query()
+            ->where(function (Builder $query) use ($raw, $digits) {
+                $query->where('phone', $raw);
+
+                if ($digits !== '') {
+                    $query
+                        ->orWhere('phone', $digits)
+                        ->orWhere('phone', '+' . $digits)
+                        ->orWhereRaw(
+                            "REGEXP_REPLACE(phone, '[^0-9]', '') = ?",
+                            [$digits]
+                        );
+                }
+            })
+            ->first();
+    }
+
+    /**
+     * Remove every non-numeric character from a phone number.
+     */
+    private function phoneDigits(string $phone): string
+    {
+        return preg_replace('/\D+/', '', $phone) ?? '';
     }
 }
