@@ -25,6 +25,8 @@ use App\Http\Controllers\Api\V1\StaffClientController;
 use App\Http\Controllers\Api\V1\StaffServiceController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Admin\AdminClientController;
+use App\Http\Controllers\Admin\AdminClientAppointmentController;
+use App\Http\Controllers\Api\V1\PackageQuantityUsageController;
 use Illuminate\Support\Facades\Hash;
 use App\Http\Controllers\Admin\ExpenseCategoryController;
 use App\Http\Controllers\Admin\ExpenseController;
@@ -144,7 +146,9 @@ Route::prefix('v1')->group(function () {
         Route::post('/clients', [AdminClientController::class, 'store']);
 
         Route::get('/clients/{client}/appointments', [AppointmentAdminController::class, 'clientAppointments'])->whereNumber('client');
+        Route::post('/clients/{client}/appointments', [AdminClientAppointmentController::class, 'store'])->whereNumber('client');
 
+        // Temporary legacy endpoint. Keep until Phase 3 moves the Expo UI to the canonical route above.
         Route::post('/clients/{client}/appointments/manual', [AppointmentAdminController::class, 'storeClientManualAppointment'])->whereNumber('client');
 
         Route::get('/clients/{id}', [AdminClientController::class, 'show']);
@@ -158,7 +162,9 @@ Route::prefix('v1')->group(function () {
 
         // NEW
         Route::get('/packages/{package}/logs', [AdminPackageController::class, 'logs']);
-        Route::post('/packages/{package}/use', [AdminPackageController::class, 'use']);
+        Route::post('/packages/{package}/usage', [PackageQuantityUsageController::class, 'storeAdmin'])->whereNumber('package');
+        // Backward-compatible alias. Session payloads are rejected; only quantity/minute use is accepted.
+        Route::post('/packages/{package}/use', [PackageQuantityUsageController::class, 'storeAdmin'])->whereNumber('package');
 
 
         // Staff admin
@@ -259,8 +265,10 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
     Route::patch('appointments/{appointment}/attach-package', [StaffPackageController::class, 'attachToAppointment'])->whereNumber('appointment');
     Route::patch('appointments/{appointment}/detach-package', [StaffPackageController::class, 'detachFromAppointment'])->whereNumber('appointment');
 
-    // Manual package usage (sessions/minutes)
-    Route::post ('packages/{package}/use',            [StaffPackageController::class, 'usePackage'])->whereNumber('package');
+    // Manual quantity usage (minutes only)
+    Route::post ('packages/{package}/usage',          [PackageQuantityUsageController::class, 'storeStaff'])->whereNumber('package');
+    // Backward-compatible alias. Session payloads are rejected; only quantity/minute use is accepted.
+    Route::post ('packages/{package}/use',            [PackageQuantityUsageController::class, 'storeStaff'])->whereNumber('package');
     Route::post ('packages/{package}/payments',       [StaffPackageController::class, 'addPayment'])->whereNumber('package');
     Route::get('clients', [StaffClientController::class, 'search']);
     Route::post('packages', [StaffPackageController::class, 'store']);
