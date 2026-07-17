@@ -145,6 +145,7 @@ class ServicePackage extends Model
     public function staffPolicy(): string
     {
         return $this->snapshot_staff_policy
+            ?: $this->service?->staff_policy
             ?: ($this->usageType() === Service::USAGE_SESSION
                 ? Service::STAFF_ANY_QUALIFIED
                 : Service::STAFF_PER_APPOINTMENT);
