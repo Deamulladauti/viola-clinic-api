@@ -112,6 +112,63 @@ class PhaseTwoAppointmentApiTest extends TestCase
         ]);
     }
 
+    public function test_admin_can_import_a_completed_session_before_the_existing_package_start_date(): void
+    {
+        Carbon::setTestNow('2026-07-15 10:00:00');
+
+        [$admin, $client] = $this->createUsers();
+        $service = $this->createService('session');
+        $staff = $this->createQualifiedStaff($service);
+        $historicalDate = Carbon::now()->subDays(20)->toDateString();
+
+        $package = $this->createPackage($client, $service, remainingSessions: 6);
+        $package->forceFill([
+            'starts_on' => Carbon::today()->toDateString(),
+        ])->save();
+
+        Sanctum::actingAs($admin, ['*']);
+
+        $response = $this->postJson("/api/v1/admin/clients/{$client->id}/appointments", [
+            'purchase_type' => 'existing_package',
+            'service_id' => $service->id,
+            'service_package_id' => $package->id,
+            'date' => $historicalDate,
+            'staff_id' => $staff->id,
+            'status' => 'completed',
+            'notes' => 'Historical session entered after the package was added to the app.',
+        ]);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('data.appointment.source', 'manual_import')
+            ->assertJsonPath('data.package.remaining_sessions', 5)
+            ->assertJsonFragment([
+                'Historical appointment is earlier than the package start date. It was saved as an admin historical import.',
+            ]);
+
+        $appointmentId = $response->json('data.appointment.id');
+
+        $this->assertDatabaseHas('package_logs', [
+            'service_package_id' => $package->id,
+            'appointment_id' => $appointmentId,
+            'source' => PackageLog::SOURCE_IMPORTED,
+            'quantity' => 1,
+            'voided_at' => null,
+        ]);
+
+        $this->assertDatabaseHas('service_packages', [
+            'id' => $package->id,
+            'remaining_sessions' => 5,
+        ]);
+
+        $updatedPackage = $package->fresh();
+
+        $this->assertSame(
+            Carbon::today()->toDateString(),
+            $updatedPackage->starts_on?->toDateString(),
+        );
+    }
+
     public function test_new_package_and_completed_appointment_roll_back_together_when_completion_fails(): void
     {
         Carbon::setTestNow('2026-07-15 10:00:00');

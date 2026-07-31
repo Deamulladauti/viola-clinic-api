@@ -129,6 +129,41 @@ class ClientNoteController extends Controller
         ], 201);
     }
 
+    public function update(Request $request, User $client, ClientNote $note)
+    {
+        if ((int) $note->client_id !== (int) $client->id) {
+            return response()->json([
+                'message' => 'Note does not belong to this client.',
+            ], 404);
+        }
+
+        $validated = $request->validate([
+            'type' => ['sometimes', 'in:general,treatment,preference,warning'],
+            'note' => ['sometimes', 'string', 'max:5000'],
+            'pinned' => ['sometimes', 'boolean'],
+        ]);
+
+        if ($validated === []) {
+            return response()->json([
+                'message' => 'Provide at least one note field to update.',
+            ], 422);
+        }
+
+        $note->fill($validated);
+        $note->save();
+
+        $note->load([
+            'author:id,name,email',
+            'staff:id,name,email,phone',
+            'appointment:id,reference_code,date,starts_at,service_id,status',
+            'appointment.service:id,name',
+        ]);
+
+        return response()->json([
+            'data' => $this->formatNote($note),
+        ]);
+    }
+
     public function destroy(User $client, ClientNote $note)
     {
         if ((int) $note->client_id !== (int) $client->id) {

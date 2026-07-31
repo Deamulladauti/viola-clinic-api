@@ -51,7 +51,10 @@ class PackageUsageService
 
             try {
                 $package->assertMatchesAppointment($appointment);
-                $package->assertUsableOn($appointment->date);
+                $package->assertUsableOn(
+                    $appointment->date,
+                    allowBeforeStart: $source === PackageLog::SOURCE_IMPORTED,
+                );
             } catch (\LogicException $exception) {
                 throw ValidationException::withMessages([
                     'service_package_id' => $exception->getMessage(),

@@ -188,7 +188,10 @@ class ServicePackage extends Model
         }
     }
 
-    public function assertUsableOn(Carbon|string|null $date = null): void
+    public function assertUsableOn(
+        Carbon|string|null $date = null,
+        bool $allowBeforeStart = false,
+    ): void
     {
         $date = $date instanceof Carbon
             ? $date->copy()->startOfDay()
@@ -198,7 +201,11 @@ class ServicePackage extends Model
             throw new \LogicException('Package is not active.');
         }
 
-        if ($this->starts_on && $date->lt($this->starts_on->copy()->startOfDay())) {
+        if (
+            ! $allowBeforeStart
+            && $this->starts_on
+            && $date->lt($this->starts_on->copy()->startOfDay())
+        ) {
             throw new \LogicException('Package has not started yet.');
         }
 

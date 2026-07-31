@@ -157,6 +157,8 @@ Route::prefix('v1')->group(function () {
         Route::post('/clients/{client}/notes', [ClientNoteController::class, 'store']);
         Route::delete('/clients/{client}/notes/{note}', [ClientNoteController::class, 'destroy']);
 
+        Route::patch('/clients/{client}/notes/{note}', [ClientNoteController::class, 'update']);
+
         Route::post('/appointments/{appointment}/notes', [ClientNoteController::class, 'storeForAppointment']);
 
 

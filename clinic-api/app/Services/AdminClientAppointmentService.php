@@ -69,6 +69,7 @@ class AdminClientAppointmentService
                     $service,
                     (int) $data['service_package_id'],
                     $selectedDate,
+                    $isHistorical,
                 ),
                 'new_package' => $this->createPackage($client, $service, $data, $selectedDate),
                 default => throw ValidationException::withMessages([
@@ -77,6 +78,14 @@ class AdminClientAppointmentService
             };
 
             if ($package) {
+                if (
+                    $isHistorical
+                    && $package->starts_on
+                    && $selectedDate->lt($package->starts_on->copy()->startOfDay())
+                ) {
+                    $warnings[] = 'Historical appointment is earlier than the package start date. It was saved as an admin historical import.';
+                }
+
                 $this->applySameStaffRule($package, $staff, $data);
 
                 [$intervalWarnings, $nextAllowedDate] = $this->validatePackageInterval(
@@ -215,12 +224,19 @@ class AdminClientAppointmentService
         Service $service,
         int $packageId,
         Carbon $appointmentDate,
+        bool $isHistorical,
     ): ServicePackage {
         $package = ServicePackage::query()
             ->lockForUpdate()
             ->findOrFail($packageId);
 
-        $this->assertPackageCanCoverAppointment($package, $client, $service, $appointmentDate);
+        $this->assertPackageCanCoverAppointment(
+            $package,
+            $client,
+            $service,
+            $appointmentDate,
+            $isHistorical,
+        );
 
         return $package;
     }
@@ -314,6 +330,7 @@ class AdminClientAppointmentService
         User $client,
         Service $service,
         Carbon $appointmentDate,
+        bool $allowBeforeStart = false,
     ): void {
         if ((int) $package->user_id !== (int) $client->id) {
             throw ValidationException::withMessages([
@@ -348,7 +365,11 @@ class AdminClientAppointmentService
             ]);
         }
 
-        if ($package->starts_on && $appointmentDate->lt($package->starts_on->copy()->startOfDay())) {
+        if (
+            ! $allowBeforeStart
+            && $package->starts_on
+            && $appointmentDate->lt($package->starts_on->copy()->startOfDay())
+        ) {
             throw ValidationException::withMessages([
                 'date' => 'The appointment is before the package start date.',
             ]);
