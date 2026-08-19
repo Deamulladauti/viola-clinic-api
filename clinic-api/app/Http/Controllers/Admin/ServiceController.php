@@ -17,89 +17,135 @@ use Illuminate\Validation\ValidationException;
 class ServiceController extends Controller
 {
     // GET /api/admin/services
-    public function index(Request $request)
-    {
-        $perPage = min(max((int) $request->input('per_page', 500), 1), 500);
-        $q        = trim((string) $request->input('q', ''));
-        $catIn    = $request->input('category'); // id or slug
-        $isActive = $request->has('is_active')   ? $request->boolean('is_active')   : null;
-        $bookable = $request->has('is_bookable') ? $request->boolean('is_bookable') : null;
-        $sort     = $request->input('sort', 'newest'); // newest|oldest|price_asc|price_desc|duration_asc|duration_desc|popular
+   // GET /api/admin/services
+public function index(Request $request)
+{
+    // Temporary backend fix:
+    // Always return up to 500 services so older app versions
+    // cannot limit the response with ?per_page=50.
+    $perPage = 500;
 
-        // Tags filter: names/strings (csv or array)
-        $tagsParam = $request->input('tags');
-        $tagsMatch = $request->input('tags_match', 'any'); // any|all
-        $tagSlugs  = [];
-        if (!empty($tagsParam)) {
-            $tagSlugs = is_array($tagsParam) ? $tagsParam : array_map('trim', explode(',', $tagsParam));
-            $tagSlugs = array_values(array_filter(array_map(fn($t) => Str::slug($t), $tagSlugs)));
-        }
+    $q        = trim((string) $request->input('q', ''));
+    $catIn    = $request->input('category'); // id or slug
+    $isActive = $request->has('is_active')
+        ? $request->boolean('is_active')
+        : null;
+    $bookable = $request->has('is_bookable')
+        ? $request->boolean('is_bookable')
+        : null;
+    $sort     = $request->input('sort', 'newest');
 
-        $query = Service::query()->with(['category:id,name,slug', 'tags:id,name,slug','staff:id,name',]);
+    // Tags filter: names/strings (csv or array)
+    $tagsParam = $request->input('tags');
+    $tagsMatch = $request->input('tags_match', 'any');
+    $tagSlugs  = [];
 
-        // Optional: include counts for admin overviews
-        if ($request->boolean('include_counts')) {
-            $query->withCount(['staff', 'appointments']);
-        }
+    if (!empty($tagsParam)) {
+        $tagSlugs = is_array($tagsParam)
+            ? $tagsParam
+            : array_map('trim', explode(',', $tagsParam));
 
-        // text + i18n search
-        if ($q !== '') {
-            $like = "%{$q}%";
-            $query->where(function ($w) use ($like) {
-                $w->where('name', 'like', $like)
-                  ->orWhere('short_description', 'like', $like)
-                  ->orWhere('description', 'like', $like)
-                  ->orWhere('slug', 'like', $like)
-                  ->orWhere('name_i18n', 'like', $like)
-                  ->orWhere('short_description_i18n', 'like', $like)
-                  ->orWhere('description_i18n', 'like', $like);
-            });
-        }
-
-        // category filter (id or slug)
-        if (!empty($catIn)) {
-            $catId = is_numeric($catIn)
-                ? (int) $catIn
-                : ServiceCategory::where('slug', $catIn)->value('id');
-
-            if ($catId) {
-                $query->where('service_category_id', $catId);
-            }
-        }
-
-        if (!is_null($isActive))  $query->where('is_active', $isActive);
-        if (!is_null($bookable))  $query->where('is_bookable', $bookable);
-
-        // tags filter
-        if (!empty($tagSlugs)) {
-            if ($tagsMatch === 'all') {
-                foreach ($tagSlugs as $slug) {
-                    $query->whereHas('tags', fn($q) => $q->where('slug', $slug));
-                }
-            } else {
-                $query->whereHas('tags', fn($q) => $q->whereIn('slug', $tagSlugs));
-            }
-        }
-
-        // sorting
-        $query->when($sort === 'oldest', fn($q) => $q->oldest())
-              ->when($sort === 'price_asc', fn($q) => $q->orderBy('price', 'asc'))
-              ->when($sort === 'price_desc', fn($q) => $q->orderBy('price', 'desc'))
-              ->when($sort === 'duration_asc', fn($q) => $q->orderBy('duration_minutes', 'asc'))
-              ->when($sort === 'duration_desc', fn($q) => $q->orderBy('duration_minutes', 'desc'))
-              ->when($sort === 'popular', function ($q) {
-                    // Prefer popularity_weight if available, fallback to views_count
-                    if (Schema::hasColumn('services', 'popularity_weight')) {
-                        $q->orderByDesc('popularity_weight')->orderBy('name');
-                    } else {
-                        $q->orderByDesc('views_count')->orderBy('name');
-                    }
-              })
-              ->when(!in_array($sort, ['oldest','price_asc','price_desc','duration_asc','duration_desc','popular'], true),
-                     fn($q) => $q->latest());
-
-        return response()->json($query->paginate($perPage));
+        $tagSlugs = array_values(
+            array_filter(
+                array_map(fn($t) => Str::slug($t), $tagSlugs)
+            )
+        );
     }
+
+    $query = Service::query()->with([
+        'category:id,name,slug',
+        'tags:id,name,slug',
+        'staff:id,name',
+    ]);
+
+    // Optional: include counts for admin overviews
+    if ($request->boolean('include_counts')) {
+        $query->withCount(['staff', 'appointments']);
+    }
+
+    // text + i18n search
+    if ($q !== '') {
+        $like = "%{$q}%";
+
+        $query->where(function ($w) use ($like) {
+            $w->where('name', 'like', $like)
+                ->orWhere('short_description', 'like', $like)
+                ->orWhere('description', 'like', $like)
+                ->orWhere('slug', 'like', $like)
+                ->orWhere('name_i18n', 'like', $like)
+                ->orWhere('short_description_i18n', 'like', $like)
+                ->orWhere('description_i18n', 'like', $like);
+        });
+    }
+
+    // category filter (id or slug)
+    if (!empty($catIn)) {
+        $catId = is_numeric($catIn)
+            ? (int) $catIn
+            : ServiceCategory::where('slug', $catIn)->value('id');
+
+        if ($catId) {
+            $query->where('service_category_id', $catId);
+        }
+    }
+
+    if (!is_null($isActive)) {
+        $query->where('is_active', $isActive);
+    }
+
+    if (!is_null($bookable)) {
+        $query->where('is_bookable', $bookable);
+    }
+
+    // tags filter
+    if (!empty($tagSlugs)) {
+        if ($tagsMatch === 'all') {
+            foreach ($tagSlugs as $slug) {
+                $query->whereHas(
+                    'tags',
+                    fn($q) => $q->where('slug', $slug)
+                );
+            }
+        } else {
+            $query->whereHas(
+                'tags',
+                fn($q) => $q->whereIn('slug', $tagSlugs)
+            );
+        }
+    }
+
+    // sorting
+    $query
+        ->when($sort === 'oldest', fn($q) => $q->oldest())
+        ->when($sort === 'price_asc', fn($q) => $q->orderBy('price', 'asc'))
+        ->when($sort === 'price_desc', fn($q) => $q->orderBy('price', 'desc'))
+        ->when($sort === 'duration_asc', fn($q) => $q->orderBy('duration_minutes', 'asc'))
+        ->when($sort === 'duration_desc', fn($q) => $q->orderBy('duration_minutes', 'desc'))
+        ->when($sort === 'popular', function ($q) {
+            if (Schema::hasColumn('services', 'popularity_weight')) {
+                $q->orderByDesc('popularity_weight')->orderBy('name');
+            } else {
+                $q->orderByDesc('views_count')->orderBy('name');
+            }
+        })
+        ->when(
+            !in_array(
+                $sort,
+                [
+                    'oldest',
+                    'price_asc',
+                    'price_desc',
+                    'duration_asc',
+                    'duration_desc',
+                    'popular',
+                ],
+                true
+            ),
+            fn($q) => $q->latest()
+        );
+
+    return response()->json($query->paginate($perPage));
+}
 
    public function show($id)
     {
