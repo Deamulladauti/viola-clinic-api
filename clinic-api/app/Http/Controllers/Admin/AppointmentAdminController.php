@@ -109,6 +109,7 @@ class AppointmentAdminController extends Controller
                 'service.category',
                 'staff',
                 'user',
+                'servicePackage',
                 // If you have a payments relation on Appointment, uncomment:
                 // 'payments',
             ])
@@ -139,7 +140,11 @@ class AppointmentAdminController extends Controller
             ->orderBy('id', 'asc')
             ->get();
 
-        $items = $appointments->map(function (Appointment $a) {
+        // Package session progress is calculated in the backend so the calendar
+        // never has to infer session position from a service/package name.
+        $packageSessionProgress = $this->buildCalendarPackageSessionProgress($appointments);
+
+        $items = $appointments->map(function (Appointment $a) use ($packageSessionProgress) {
             $service  = $a->service;
             $category = $service?->category;
             $staff    = $a->staff;
@@ -197,6 +202,10 @@ class AppointmentAdminController extends Controller
                     'id'   => $staff->id,
                     'name' => $staff->name,
                 ] : null,
+
+                // Null for normal single appointments, cancellations/no-shows,
+                // or package records that do not represent session-based usage.
+                'package_session' => $packageSessionProgress[$a->id] ?? null,
             ];
         })->values();
 
@@ -205,6 +214,157 @@ class AppointmentAdminController extends Controller
             'to'    => $data['to'],
             'items' => $items,
         ]);
+    }
+
+    /**
+     * Build calendar-facing session progress for session-package appointments.
+     *
+     * Completed appointments use their active package usage ledger entry.
+     * Future pending/confirmed appointments are numbered after the sessions that
+     * have actually been consumed, then ordered by date/time/id across the whole
+     * package (not just the currently visible calendar week).
+     */
+    private function buildCalendarPackageSessionProgress($calendarAppointments): array
+    {
+        $packageIds = $calendarAppointments
+            ->pluck('service_package_id')
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        if ($packageIds->isEmpty()) {
+            return [];
+        }
+
+        $packages = ServicePackage::query()
+            ->whereIn('id', $packageIds)
+            ->get([
+                'id',
+                'snapshot_total_sessions',
+                'remaining_sessions',
+                'snapshot_usage_type',
+            ])
+            ->keyBy('id');
+
+        $sessionLogs = PackageLog::query()
+            ->whereIn('service_package_id', $packageIds)
+            ->whereNull('voided_at')
+            ->where(function ($query) {
+                $query->where('usage_type', Service::USAGE_SESSION)
+                    ->orWhere('used_sessions', '>', 0);
+            })
+            ->orderBy('service_package_id')
+            ->orderBy('occurred_on')
+            ->orderBy('used_at')
+            ->orderBy('id')
+            ->get([
+                'id',
+                'service_package_id',
+                'appointment_id',
+                'session_number',
+                'occurred_on',
+                'used_at',
+            ]);
+
+        $logsByPackage = $sessionLogs->groupBy('service_package_id');
+        $completedNumberByAppointment = [];
+        $usedCountByPackage = [];
+
+        foreach ($packageIds as $packageId) {
+            $logs = $logsByPackage->get($packageId, collect())->values();
+            $usedCountByPackage[$packageId] = $logs->count();
+
+            foreach ($logs as $index => $log) {
+                // session_number is the ledger source of truth. The index fallback
+                // keeps older migrated logs useful if that field was never backfilled.
+                $number = (int) ($log->session_number ?: ($index + 1));
+
+                if ($log->appointment_id) {
+                    $completedNumberByAppointment[(int) $log->appointment_id] = $number;
+                }
+            }
+        }
+
+        // Number all active future bookings for the package, even if some of them
+        // are outside the current calendar week. This prevents every future visit
+        // from incorrectly showing the same "next" session number.
+        $today = Carbon::today(config('app.timezone'))->toDateString();
+
+        $futureAppointments = Appointment::query()
+            ->whereIn('service_package_id', $packageIds)
+            ->whereIn('status', [Appointment::STATUS_PENDING, Appointment::STATUS_CONFIRMED])
+            ->whereDate('date', '>=', $today)
+            ->orderBy('service_package_id')
+            ->orderBy('date')
+            ->orderBy('starts_at')
+            ->orderBy('id')
+            ->get(['id', 'service_package_id', 'date', 'starts_at']);
+
+        $futureNumberByAppointment = [];
+
+        foreach ($futureAppointments->groupBy('service_package_id') as $packageId => $appointments) {
+            $usedCount = (int) ($usedCountByPackage[(int) $packageId] ?? 0);
+
+            foreach ($appointments->values() as $index => $appointment) {
+                $futureNumberByAppointment[(int) $appointment->id] = $usedCount + $index + 1;
+            }
+        }
+
+        $result = [];
+
+        foreach ($calendarAppointments as $appointment) {
+            if (! $appointment->service_package_id) {
+                continue;
+            }
+
+            $packageId = (int) $appointment->service_package_id;
+            $package = $packages->get($packageId);
+
+            if (! $package) {
+                continue;
+            }
+
+            $usedCount = (int) ($usedCountByPackage[$packageId] ?? 0);
+            $totalSessions = $package->snapshot_total_sessions !== null
+                ? (int) $package->snapshot_total_sessions
+                : ($package->remaining_sessions !== null
+                    ? $usedCount + (int) $package->remaining_sessions
+                    : null);
+
+            if (! $totalSessions || $totalSessions < 1) {
+                continue;
+            }
+
+            $sessionNumber = null;
+
+            if ($appointment->status === Appointment::STATUS_COMPLETED) {
+                $sessionNumber = $completedNumberByAppointment[(int) $appointment->id] ?? null;
+            } elseif (in_array($appointment->status, [Appointment::STATUS_PENDING, Appointment::STATUS_CONFIRMED], true)) {
+                $appointmentDate = $appointment->date instanceof Carbon
+                    ? $appointment->date->toDateString()
+                    : Carbon::parse($appointment->date)->toDateString();
+
+                if ($appointmentDate >= $today) {
+                    $sessionNumber = $futureNumberByAppointment[(int) $appointment->id] ?? null;
+                }
+            }
+
+            if (! $sessionNumber) {
+                continue;
+            }
+
+            $result[(int) $appointment->id] = [
+                'package_id' => $packageId,
+                'session_number' => (int) $sessionNumber,
+                'total_sessions' => $totalSessions,
+                'remaining_sessions' => $package->remaining_sessions !== null
+                    ? (int) $package->remaining_sessions
+                    : null,
+            ];
+        }
+
+        return $result;
     }
 
     public function clientAppointments(Request $request, int $client)
