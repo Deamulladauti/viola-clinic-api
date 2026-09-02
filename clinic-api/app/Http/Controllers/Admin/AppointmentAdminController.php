@@ -13,6 +13,7 @@ use App\Models\Service;
 use App\Models\ServicePackage;
 use App\Models\Staff;
 use App\Models\PackageLog;
+use App\Models\PackagePayment;
 use App\Services\AppointmentCompletionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -981,8 +982,11 @@ class AppointmentAdminController extends Controller
             'service.category',
             'staff',
             'user',
-            'package.logs',       // usage logs
-            'package.payments',   // ✅ ADD THIS
+            'package.logs',
+            'package.payments',
+            'payments.staff',
+            'payments.admin',
+            'payments.voidedBy',
             'logs.user',
         ]);
 
@@ -992,25 +996,90 @@ class AppointmentAdminController extends Controller
         $user     = $appointment->user;
         $package  = $appointment->package;
 
-        // ----------------------
-        // 💰 Price calculations
-        // ----------------------
+        // ---------------------------------------------------------
+        // Payment summary
+        // ---------------------------------------------------------
+        // Single treatments are priced in EUR in the current schema.
+        // Payments can still be recorded as EUR cash, MKD cash, or MKD card.
+        // Always normalize to MKD for arithmetic, then convert back to the
+        // booking currency for display. Voided payments never reduce balance.
         $appointmentPrice = (float) ($appointment->price ?? 0.0);
+        $appointmentPriceMkd = round($appointmentPrice * ServicePackage::EUR_TO_MKD, 2);
+
+        $appointmentPayments = $appointment->payments
+            ->sortByDesc('id')
+            ->values();
+
+        $appointmentPaidMkd = round(
+            $appointmentPayments
+                ->whereNull('voided_at')
+                ->sum(fn (PackagePayment $payment) => $this->paymentAmountToMkd($payment)),
+            2,
+        );
+
+        $appointmentRemainingMkd = round(
+            max($appointmentPriceMkd - $appointmentPaidMkd, 0),
+            2,
+        );
+        $appointmentPaid = round($appointmentPaidMkd / ServicePackage::EUR_TO_MKD, 2);
+        $appointmentRemaining = round($appointmentRemainingMkd / ServicePackage::EUR_TO_MKD, 2);
 
         $packageTotal = $package && $package->price_total !== null
             ? (float) $package->price_total
-            : null;
+            : ($package && $package->price_paid !== null ? (float) $package->price_paid : null);
+        $packageTotalMkd = $package ? (float) $package->priceTotalMkd() : null;
+        $packagePaid = $package ? (float) ($package->amount_paid ?? 0) : null;
+        $packagePaidMkd = $package ? (float) ($package->amount_paid_mkd ?? 0) : null;
+        $packageRemaining = $package ? (float) ($package->remaining_to_pay ?? 0) : null;
+        $packageRemainingMkd = $package ? (float) ($package->remaining_to_pay_mkd ?? 0) : null;
 
-        // ✅ Uses accessor (sum of package_payments not voided)
-        $packagePaid = $package ? (float) ($package->amount_paid ?? 0) : 0.0;
+        $isPackageBooking = $package !== null;
+        $paymentCurrency = $isPackageBooking ? $package->packageCurrency() : 'EUR';
+        $totalPrice = $isPackageBooking ? (float) ($packageTotal ?? 0) : $appointmentPrice;
+        $amountPaid = $isPackageBooking ? (float) ($packagePaid ?? 0) : $appointmentPaid;
+        $remainingPrice = $isPackageBooking ? (float) ($packageRemaining ?? 0) : $appointmentRemaining;
+        $totalPriceMkd = $isPackageBooking ? (float) ($packageTotalMkd ?? 0) : $appointmentPriceMkd;
+        $amountPaidMkd = $isPackageBooking ? (float) ($packagePaidMkd ?? 0) : $appointmentPaidMkd;
+        $remainingPriceMkd = $isPackageBooking ? (float) ($packageRemainingMkd ?? 0) : $appointmentRemainingMkd;
 
-        $packageRemaining = null;
-        if ($packageTotal !== null) {
-            $packageRemaining = max(0, $packageTotal - $packagePaid);
-        }
+        $paymentStatus = $remainingPriceMkd <= 0.01
+            ? 'paid'
+            : ($amountPaidMkd > 0.01 ? 'partial' : 'unpaid');
 
-        $totalPrice     = $packageTotal !== null ? $packageTotal : $appointmentPrice;
-        $remainingPrice = $packageTotal !== null ? $packageRemaining : null;
+        $presentAppointmentPayment = function (PackagePayment $payment): array {
+            $recordedBy = null;
+
+            if ($payment->staff) {
+                $recordedBy = [
+                    'type' => 'staff',
+                    'id' => $payment->staff->id,
+                    'name' => $payment->staff->name,
+                ];
+            } elseif ($payment->admin) {
+                $recordedBy = [
+                    'type' => 'admin',
+                    'id' => $payment->admin->id,
+                    'name' => $payment->admin->name,
+                ];
+            }
+
+            return [
+                'id' => $payment->id,
+                'amount' => (float) $payment->amount,
+                'currency' => $payment->currency,
+                'method' => $payment->method,
+                'exchange_rate' => $payment->exchange_rate !== null ? (float) $payment->exchange_rate : null,
+                'amount_mkd' => $payment->amount_mkd !== null
+                    ? (float) $payment->amount_mkd
+                    : $this->paymentAmountToMkd($payment),
+                'note' => $payment->notes,
+                'recorded_by' => $recordedBy,
+                'created_at' => $payment->created_at?->toIso8601String(),
+                'is_voided' => $payment->voided_at !== null,
+                'voided_at' => $payment->voided_at?->toIso8601String(),
+                'void_reason' => $payment->void_reason,
+            ];
+        };
 
         return response()->json([
             'id'             => $appointment->id,
@@ -1024,10 +1093,33 @@ class AppointmentAdminController extends Controller
             'starts_at'        => (string) $appointment->starts_at,
             'duration_minutes' => (int) ($appointment->duration_minutes ?? $service?->duration_minutes ?? 60),
 
-            // 💰 Prices on this booking
+            // Current booking price fields retained for frontend compatibility.
             'price'           => $appointmentPrice,
-            'total_price'     => (float) $totalPrice,
+            'total_price'     => $totalPrice,
             'remaining_price' => $remainingPrice,
+            'amount_paid'     => $amountPaid,
+            'currency'        => $paymentCurrency,
+            'payment_status'  => $paymentStatus,
+            'is_paid'         => $paymentStatus === 'paid',
+
+            // Explicit source-of-truth payment summary for the booking details UI.
+            'payment_summary' => [
+                'source' => $isPackageBooking ? 'package' : 'appointment',
+                'currency' => $paymentCurrency,
+                'total' => $totalPrice,
+                'paid' => $amountPaid,
+                'remaining' => $remainingPrice,
+                'total_mkd' => $totalPriceMkd,
+                'paid_mkd' => $amountPaidMkd,
+                'remaining_mkd' => $remainingPriceMkd,
+                'status' => $paymentStatus,
+            ],
+
+            // Appointment payments are intentionally separate from package payments.
+            // For package bookings this collection should normally be empty.
+            'payments' => $appointmentPayments
+                ->map($presentAppointmentPayment)
+                ->values(),
 
             'notes'       => $appointment->notes,
             'admin_notes' => $appointment->admin_notes,
@@ -1064,41 +1156,41 @@ class AppointmentAdminController extends Controller
                 'service_id'   => $package->service_id,
                 'service_name' => $package->service_name,
                 'status'       => $package->status,
+                'currency'     => $package->packageCurrency(),
 
                 'price_total' => $package->price_total !== null ? (float) $package->price_total : null,
                 'price_paid'  => $package->price_paid !== null ? (float) $package->price_paid : null,
 
-                'amount_paid'       => (float) ($package->amount_paid ?? 0),
-                'remaining_to_pay'  => (float) ($package->remaining_to_pay ?? ($packageRemaining ?? 0)),
-                'remaining_balance' => $packageRemaining,
+                'amount_paid'          => (float) ($package->amount_paid ?? 0),
+                'amount_paid_mkd'      => (float) ($package->amount_paid_mkd ?? 0),
+                'remaining_to_pay'     => (float) ($package->remaining_to_pay ?? 0),
+                'remaining_to_pay_mkd' => (float) ($package->remaining_to_pay_mkd ?? 0),
+                'remaining_balance'    => (float) ($package->remaining_to_pay ?? 0),
 
                 'remaining_sessions' => $package->remaining_sessions,
                 'remaining_minutes'  => $package->remaining_minutes,
                 'starts_on'          => optional($package->starts_on)->toDateString(),
                 'expires_on'         => optional($package->expires_on)->toDateString(),
 
-                // ✅ Payments history (THIS is what your UI needs)
                 'payments' => $package->payments()
-                ->whereNull('voided_at')
-                ->orderByDesc('id')
-                ->get()
-                ->map(function ($p) {
-                    return [
-                        'id'             => $p->id,
-                        'amount'         => (float) $p->amount,
-                        'currency'       => $p->currency,
-                        'method'         => $p->method,
-                        'note'           => $p->notes,
-                        'appointment_id' => $p->appointment_id,
-                        'staff_id'       => $p->staff_id,
-                        'admin_id'       => $p->admin_id,
-                        'created_at'     => $p->created_at?->toIso8601String(),
-                    ];
-                })
-                ->values(),
+                    ->whereNull('voided_at')
+                    ->orderByDesc('id')
+                    ->get()
+                    ->map(function ($p) {
+                        return [
+                            'id'             => $p->id,
+                            'amount'         => (float) $p->amount,
+                            'currency'       => $p->currency,
+                            'method'         => $p->method,
+                            'note'           => $p->notes,
+                            'appointment_id' => $p->appointment_id,
+                            'staff_id'       => $p->staff_id,
+                            'admin_id'       => $p->admin_id,
+                            'created_at'     => $p->created_at?->toIso8601String(),
+                        ];
+                    })
+                    ->values(),
 
-
-                // 🧾 usage history
                 'usage_logs' => $package->logs->map(function ($log) {
                     return [
                         'id'            => $log->id,
@@ -1131,7 +1223,22 @@ class AppointmentAdminController extends Controller
         ]);
     }
 
+    private function paymentAmountToMkd(PackagePayment $payment): float
+    {
+        if ($payment->amount_mkd !== null) {
+            return (float) $payment->amount_mkd;
+        }
 
+        $amount = (float) $payment->amount;
+        $currency = strtoupper($payment->currency ?: 'EUR');
+
+        if ($currency === 'EUR') {
+            $rate = (float) ($payment->exchange_rate ?: ServicePackage::EUR_TO_MKD);
+            return round($amount * $rate, 2);
+        }
+
+        return round($amount, 2);
+    }
 
 
     public function stats(Request $request)
