@@ -151,7 +151,8 @@ Route::prefix('v1')->group(function () {
         // Temporary legacy endpoint. Keep until Phase 3 moves the Expo UI to the canonical route above.
         Route::post('/clients/{client}/appointments/manual', [AppointmentAdminController::class, 'storeClientManualAppointment'])->whereNumber('client');
 
-        Route::get('/clients/{id}', [AdminClientController::class, 'show']);
+        Route::get('/clients/{id}', [AdminClientController::class, 'show'])->whereNumber('id');
+        Route::patch('/clients/{id}', [AdminClientController::class, 'update'])->whereNumber('id');
 
         Route::get('/clients/{client}/notes', [ClientNoteController::class, 'index']);
         Route::post('/clients/{client}/notes', [ClientNoteController::class, 'store']);

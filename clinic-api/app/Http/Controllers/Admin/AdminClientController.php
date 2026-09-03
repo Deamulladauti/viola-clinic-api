@@ -143,7 +143,8 @@ class AdminClientController extends Controller
         }
 
         /*
-         * Require at least one contact method.
+         * Require at least one contact method for the current flow.
+         * Task 26 will later relax this for legacy/no-login clients.
          */
         if (! $phone && ! $email) {
             throw ValidationException::withMessages([
@@ -229,18 +230,149 @@ class AdminClientController extends Controller
      */
     public function show(int $id)
     {
-        $user = User::query()
-            ->whereKey($id)
-            ->whereHas('roles', function ($query) {
-                $query->where('name', 'client');
-            })
-            ->first();
+        $user = $this->findClient($id);
 
         if (! $user) {
             return response()->json([
                 'message' => 'Client not found.',
             ], 404);
         }
+
+        return response()->json($this->clientDetailsPayload($user));
+    }
+
+    /**
+     * Update a clinic client from the Admin area.
+     *
+     * The existing users table stores the display name in a single `name`
+     * column. The Admin UI edits first/last name separately for clarity and
+     * this endpoint safely recombines them so the rest of the app remains
+     * backward-compatible.
+     */
+    public function update(Request $request, int $id)
+    {
+        $client = $this->findClient($id);
+
+        if (! $client) {
+            return response()->json([
+                'message' => 'Client not found.',
+            ], 404);
+        }
+
+        $validated = $request->validate([
+            'first_name' => ['required', 'string', 'max:120'],
+            'last_name' => ['nullable', 'string', 'max:135'],
+            'phone' => ['nullable', 'string', 'max:50'],
+            'email' => ['nullable', 'email', 'max:255'],
+            'address_line1' => ['nullable', 'string', 'max:255'],
+            'address_line2' => ['nullable', 'string', 'max:255'],
+            'city' => ['nullable', 'string', 'max:120'],
+            'country_code' => ['nullable', 'string', 'size:2'],
+            'preferred_language' => ['nullable', 'string', 'in:en,sq,mk'],
+            'marketing_opt_in' => ['sometimes', 'boolean'],
+        ]);
+
+        $firstName = trim($validated['first_name']);
+        $lastName = trim((string) ($validated['last_name'] ?? ''));
+
+        if ($firstName === '') {
+            throw ValidationException::withMessages([
+                'first_name' => ['Enter the client\'s first name.'],
+            ]);
+        }
+
+        $phone = $this->nullableTrimmed($validated['phone'] ?? null);
+        $email = $this->nullableTrimmed($validated['email'] ?? null);
+        $email = $email ? mb_strtolower($email) : null;
+
+        // Keep the current Task 6 rule aligned with client creation.
+        // This is intentionally isolated so Task 26 can later permit both
+        // fields to be null for legacy/no-login clinic records.
+        if (! $phone && ! $email) {
+            throw ValidationException::withMessages([
+                'contact' => ['Enter at least a phone number or email address.'],
+            ]);
+        }
+
+        if ($email) {
+            $emailExists = User::withTrashed()
+                ->where('id', '<>', $client->id)
+                ->whereRaw('LOWER(email) = ?', [$email])
+                ->exists();
+
+            if ($emailExists) {
+                throw ValidationException::withMessages([
+                    'email' => ['This email address is already being used.'],
+                ]);
+            }
+        }
+
+        if ($phone) {
+            $phoneDigits = preg_replace('/\D+/', '', $phone);
+
+            if ($phoneDigits === '') {
+                throw ValidationException::withMessages([
+                    'phone' => ['Enter a valid phone number.'],
+                ]);
+            }
+
+            $phoneExists = User::withTrashed()
+                ->where('id', '<>', $client->id)
+                ->whereNotNull('phone')
+                ->get(['id', 'phone'])
+                ->contains(function (User $other) use ($phoneDigits) {
+                    return preg_replace('/\D+/', '', (string) $other->phone) === $phoneDigits;
+                });
+
+            if ($phoneExists) {
+                throw ValidationException::withMessages([
+                    'phone' => ['This phone number is already being used.'],
+                ]);
+            }
+        }
+
+        $client->fill([
+            'name' => trim($firstName . ' ' . $lastName),
+            'phone' => $phone,
+            'email' => $email,
+            'address_line1' => $this->nullableTrimmed($validated['address_line1'] ?? null),
+            'address_line2' => $this->nullableTrimmed($validated['address_line2'] ?? null),
+            'city' => $this->nullableTrimmed($validated['city'] ?? null),
+            'country_code' => ($country = $this->nullableTrimmed($validated['country_code'] ?? null))
+                ? mb_strtoupper($country)
+                : null,
+            'preferred_language' => $validated['preferred_language'] ?? ($client->preferred_language ?: 'en'),
+            'marketing_opt_in' => array_key_exists('marketing_opt_in', $validated)
+                ? (bool) $validated['marketing_opt_in']
+                : (bool) $client->marketing_opt_in,
+        ])->save();
+
+        return response()->json([
+            'message' => 'Client updated successfully.',
+            'data' => $this->clientDetailsPayload($client->refresh()),
+        ]);
+    }
+
+    /**
+     * Standard client response used by search, lookup, and creation.
+     */
+    protected function formatClient(User $user): array
+    {
+        [$firstName, $lastName] = $this->splitName($user->name);
+
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'first_name' => $firstName,
+            'last_name' => $lastName,
+            'email' => $user->email,
+            'phone' => $user->phone,
+        ];
+    }
+
+    protected function clientDetailsPayload(User $user): array
+    {
+        [$firstName, $lastName] = $this->splitName($user->name);
 
         $activePackagesCount = ServicePackage::query()
             ->where('user_id', $user->id)
@@ -251,27 +383,63 @@ class AdminClientController extends Controller
             ->where('user_id', $user->id)
             ->count();
 
-        return response()->json([
-            'id' => $user->id,
-            'name' => $user->name,
-            'email' => $user->email,
-            'phone' => $user->phone,
-            'active_packages_count' => $activePackagesCount,
-            'total_packages_count' => $totalPackagesCount,
-            'created_at' => $user->created_at,
-        ]);
-    }
-
-    /**
-     * Standard client response used by search, lookup, and creation.
-     */
-    protected function formatClient(User $user): array
-    {
         return [
             'id' => $user->id,
             'name' => $user->name,
+            'first_name' => $firstName,
+            'last_name' => $lastName,
             'email' => $user->email,
             'phone' => $user->phone,
+            'address_line1' => $user->address_line1,
+            'address_line2' => $user->address_line2,
+            'city' => $user->city,
+            'country_code' => $user->country_code,
+            'preferred_language' => $user->preferred_language ?: 'en',
+            'marketing_opt_in' => (bool) $user->marketing_opt_in,
+            'active_packages_count' => $activePackagesCount,
+            'total_packages_count' => $totalPackagesCount,
+            'created_at' => $user->created_at,
         ];
+    }
+
+    protected function findClient(int $id): ?User
+    {
+        return User::query()
+            ->whereKey($id)
+            ->whereHas('roles', function ($query) {
+                $query->where('name', 'client');
+            })
+            ->first();
+    }
+
+    /**
+     * Split the existing display-name column into Admin form fields without
+     * forcing a schema migration or breaking other screens that read `name`.
+     */
+    protected function splitName(?string $name): array
+    {
+        $clean = trim((string) $name);
+
+        if ($clean === '') {
+            return ['', ''];
+        }
+
+        $parts = preg_split('/\s+/', $clean, 2);
+
+        return [
+            $parts[0] ?? '',
+            $parts[1] ?? '',
+        ];
+    }
+
+    protected function nullableTrimmed(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $clean = trim((string) $value);
+
+        return $clean === '' ? null : $clean;
     }
 }
