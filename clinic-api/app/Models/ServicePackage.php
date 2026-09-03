@@ -208,10 +208,6 @@ class ServicePackage extends Model
         ) {
             throw new \LogicException('Package has not started yet.');
         }
-
-        if ($this->expires_on && $date->gt($this->expires_on->copy()->startOfDay())) {
-            throw new \LogicException('Package is expired for the selected date.');
-        }
     }
 
     public function assertMatchesAppointment(Appointment $appointment): void

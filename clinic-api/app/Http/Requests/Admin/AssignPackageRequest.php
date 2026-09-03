@@ -22,9 +22,8 @@ class AssignPackageRequest extends FormRequest
             'price_total' => ['nullable', 'numeric', 'min:0'],
             'currency'    => ['nullable','string','size:3'],
 
-            // optional time bounds
+            // optional package start date (packages do not expire)
             'starts_on'   => ['nullable','date'],
-            'expires_on'  => ['nullable','date','after_or_equal:starts_on'],
 
             // optional note
             'notes'       => ['nullable','string','max:2000'],

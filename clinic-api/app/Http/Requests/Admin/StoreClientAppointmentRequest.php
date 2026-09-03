@@ -55,7 +55,6 @@ class StoreClientAppointmentRequest extends FormRequest
             'package.price_total' => ['nullable', 'numeric', 'min:0'],
             'package.currency' => ['nullable', Rule::in(['EUR', 'MKD'])],
             'package.starts_on' => ['nullable', 'date_format:Y-m-d'],
-            'package.expires_on' => ['nullable', 'date_format:Y-m-d'],
             'package.notes' => ['nullable', 'string', 'max:5000'],
         ];
     }

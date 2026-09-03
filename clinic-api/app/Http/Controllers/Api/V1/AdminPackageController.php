@@ -16,7 +16,7 @@ class AdminPackageController extends Controller
 {
     /**
      * POST /api/v1/admin/packages/assign
-     * Body: user_id, service_id, [price_total, currency, starts_on, expires_on, notes]
+     * Body: user_id, service_id, [price_total, currency, starts_on, notes]
      */
     public function assign(AssignPackageRequest $request)
     {
@@ -64,7 +64,8 @@ class AdminPackageController extends Controller
             'remaining_minutes' => $isMinutesType ? $includedUnits : null,
             'status' => ServicePackage::STATUS_ACTIVE,
             'starts_on' => $request->date('starts_on'),
-            'expires_on' => $request->date('expires_on'),
+            // Package expiry is no longer part of the clinic product rules.
+            'expires_on' => null,
             'notes' => $request->string('notes'),
         ]);
 

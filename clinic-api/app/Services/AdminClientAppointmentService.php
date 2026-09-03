@@ -275,25 +275,9 @@ class AdminClientAppointmentService
             $timezone,
         )->startOfDay();
 
-        $expiresOn = !empty($packageData['expires_on'])
-            ? Carbon::createFromFormat('Y-m-d', (string) $packageData['expires_on'], $timezone)->startOfDay()
-            : null;
-
-        if ($expiresOn && $expiresOn->lt($startsOn)) {
-            throw ValidationException::withMessages([
-                'package.expires_on' => 'The package expiration date must be on or after its start date.',
-            ]);
-        }
-
         if ($appointmentDate->lt($startsOn)) {
             throw ValidationException::withMessages([
                 'date' => 'The appointment cannot be before the package start date.',
-            ]);
-        }
-
-        if ($expiresOn && $appointmentDate->gt($expiresOn)) {
-            throw ValidationException::withMessages([
-                'date' => 'The appointment cannot be after the package expiration date.',
             ]);
         }
 
@@ -317,7 +301,8 @@ class AdminClientAppointmentService
             'currency' => strtoupper((string) ($packageData['currency'] ?? 'EUR')),
             'status' => ServicePackage::STATUS_ACTIVE,
             'starts_on' => $startsOn->toDateString(),
-            'expires_on' => $expiresOn?->toDateString(),
+            // Kept nullable in the database for backwards compatibility only.
+            'expires_on' => null,
             'notes' => $packageData['notes'] ?? null,
         ]);
         $package->save();
@@ -375,11 +360,6 @@ class AdminClientAppointmentService
             ]);
         }
 
-        if ($package->expires_on && $appointmentDate->gt($package->expires_on->copy()->startOfDay())) {
-            throw ValidationException::withMessages([
-                'date' => 'The appointment is after the package expiration date.',
-            ]);
-        }
     }
 
     private function applySameStaffRule(ServicePackage $package, Staff $staff, array $data): void
