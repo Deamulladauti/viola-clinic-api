@@ -15,6 +15,7 @@ use App\Models\Staff;
 use App\Models\PackageLog;
 use App\Models\PackagePayment;
 use App\Services\AppointmentCompletionService;
+use App\Services\AdminAppointmentUpdateService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -588,8 +589,50 @@ class AppointmentAdminController extends Controller
         AppointmentUpdateRequest $request,
         Appointment $appointment,
         AppointmentCompletionService $completionService,
+        AdminAppointmentUpdateService $appointmentUpdateService,
     ) {
         $data = $request->validated();
+
+        $structuralKeys = [
+            'service_id',
+            'service_package_id',
+            'staff_id',
+            'date',
+            'starts_at',
+        ];
+
+        $hasStructuralEdit = collect($structuralKeys)
+            ->contains(fn (string $key) => array_key_exists($key, $data));
+
+        if ($hasStructuralEdit) {
+            if (array_key_exists('status', $data)) {
+                abort(422, 'Edit the booking details and appointment status separately so each change is audited clearly.');
+            }
+
+            $admin = $request->user();
+            if (! $admin) {
+                abort(401, 'Authentication required.');
+            }
+
+            $result = $appointmentUpdateService->update(
+                appointment: $appointment,
+                data: $data,
+                admin: $admin,
+            );
+
+            return response()->json([
+                'message' => 'Appointment updated',
+                'data' => [
+                    'appointment' => $result['appointment'],
+                    'warnings' => $result['warnings'],
+                    'next_allowed_date' => $result['next_allowed_date'],
+                ],
+            ]);
+        }
+
+        // Backwards-compatible status/notes-only behavior. The dedicated
+        // /status endpoint remains the preferred path for status changes and
+        // is also the only path used to reverse a completed visit safely.
         $requestedStatus = $data['status'] ?? null;
 
         if ($requestedStatus !== null) {
@@ -1467,7 +1510,7 @@ class AppointmentAdminController extends Controller
             ]);
         }
 
-        if ($to === Appointment::STATUS_CONFIRMED) {
+        if ($to === Appointment::STATUS_CONFIRMED && $from !== Appointment::STATUS_COMPLETED) {
             $service = Service::findOrFail($appointment->service_id);
             $dateOnly = Carbon::parse($appointment->date)->toDateString();
             $startsAt = $this->normalizeStartsAt($appointment->starts_at ?? $appointment->time);
