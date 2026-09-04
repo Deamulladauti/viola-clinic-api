@@ -71,12 +71,17 @@ class Task7AdminAppointmentEditTest extends TestCase
         $this->assertDatabaseHas('appointments', [
             'id' => $appointment->id,
             'service_id' => $secondService->id,
-            'date' => $newDate,
             'starts_at' => '11:15:00',
             'duration_minutes' => 45,
             'price' => 80,
             'notes' => 'Corrected future booking.',
         ]);
+
+        // SQLite stores Laravel date casts as midnight datetimes internally,
+        // while MySQL DATE columns return the calendar date. Assert through
+        // the model cast so this test behaves consistently on both databases.
+        $updatedAppointment = $appointment->fresh();
+        $this->assertSame($newDate, $updatedAppointment->date->toDateString());
 
         $this->assertDatabaseHas('appointment_logs', [
             'appointment_id' => $appointment->id,

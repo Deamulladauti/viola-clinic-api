@@ -620,10 +620,15 @@ class AppointmentAdminController extends Controller
                 admin: $admin,
             );
 
+            $updatedAppointment = $result['appointment']->toArray();
+            $updatedAppointment['date'] = $result['appointment']->date instanceof Carbon
+                ? $result['appointment']->date->toDateString()
+                : Carbon::parse($result['appointment']->date)->toDateString();
+
             return response()->json([
                 'message' => 'Appointment updated',
                 'data' => [
-                    'appointment' => $result['appointment'],
+                    'appointment' => $updatedAppointment,
                     'warnings' => $result['warnings'],
                     'next_allowed_date' => $result['next_allowed_date'],
                 ],
