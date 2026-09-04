@@ -31,8 +31,8 @@ class PaymentController extends Controller
 
         $query = PackagePayment::query()
             ->with([
-                'package:id,user_id,service_id,service_name,price_total,currency,status',
-                'appointment:id,user_id,service_id,service_package_id,date,starts_at,price,status,reference_code',
+                'package:id,user_id,service_id,service_name,price_total,sale_final_price,currency,status',
+                'appointment:id,user_id,service_id,service_package_id,date,starts_at,price,sale_final_price,status,reference_code',
                 'appointment.service:id,name',
                 'staff:id,name,email,phone,user_id',
                 'admin:id,name,email',
@@ -166,7 +166,7 @@ class PaymentController extends Controller
             'summary' => [
                 'appointment_id' => $appointment->id,
                 'service' => $appointment->service?->name,
-                'price' => (float) ($appointment->price ?? 0),
+                'price' => $appointment->finalSalePrice(),
                 'price_mkd' => $this->appointmentPriceMkd($appointment),
                 'amount_paid' => $this->mkdToEur($this->appointmentPaidMkd($appointment)),
                 'amount_paid_mkd' => $this->appointmentPaidMkd($appointment),
@@ -230,7 +230,7 @@ class PaymentController extends Controller
             'summary' => [
                 'package_id' => $package->id,
                 'service' => $package->service_name,
-                'price_total' => (float) ($package->price_total ?? $package->price_paid),
+                'price_total' => $package->finalSalePrice(),
                 'price_total_mkd' => $package->priceTotalMkd(),
                 'amount_paid' => (float) $package->amount_paid,
                 'amount_paid_mkd' => (float) $package->amount_paid_mkd,
@@ -414,7 +414,7 @@ class PaymentController extends Controller
             'package' => $payment->package ? [
                 'id' => $payment->package->id,
                 'service_name' => $payment->package->service_name,
-                'price_total' => (float) ($payment->package->price_total ?? 0),
+                'price_total' => $payment->package->finalSalePrice(),
                 'amount_paid' => (float) ($payment->package->amount_paid ?? 0),
                 'remaining_balance' => (float) ($payment->package->remaining_to_pay ?? 0),
                 'amount_paid_mkd' => (float) ($payment->package->amount_paid_mkd ?? 0),
@@ -428,14 +428,14 @@ class PaymentController extends Controller
                 'date' => $payment->appointment->date,
                 'starts_at' => $payment->appointment->starts_at,
                 'status' => $payment->appointment->status,
-                'price' => (float) ($payment->appointment->price ?? 0),
+                'price' => $payment->appointment->finalSalePrice(),
             ] : null,
         ];
     }
 
     private function appointmentPriceMkd(Appointment $appointment): float
     {
-        $price = (float) ($appointment->price ?? 0);
+        $price = $appointment->finalSalePrice();
 
         return round($price * ServicePackage::EUR_TO_MKD, 2);
     }

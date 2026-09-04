@@ -3,6 +3,7 @@
 namespace App\Http\Requests\Admin;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class AssignPackageRequest extends FormRequest
 {
@@ -18,8 +19,11 @@ class AssignPackageRequest extends FormRequest
             'service_id'  => ['required','integer','exists:services,id'],
             'assigned_staff_id' => ['nullable','integer','exists:staff,id'],
 
-            // optional — override price or leave null to use service->price
+            // Legacy explicit final price remains accepted for compatibility.
+            // New Admin flows should send sale_discount_type/value instead.
             'price_total' => ['nullable', 'numeric', 'min:0'],
+            'sale_discount_type' => ['nullable', Rule::in(['fixed', 'percent']), 'required_with:sale_discount_value'],
+            'sale_discount_value' => ['nullable', 'numeric', 'min:0', 'required_with:sale_discount_type'],
             'currency'    => ['nullable','string','size:3'],
 
             // optional package start date (packages do not expire)

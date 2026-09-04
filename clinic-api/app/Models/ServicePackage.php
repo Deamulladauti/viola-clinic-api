@@ -35,6 +35,11 @@ class ServicePackage extends Model
         'snapshot_duration_minutes',
         'price_paid',
         'price_total',
+        'sale_original_price',
+        'sale_discount_type',
+        'sale_discount_value',
+        'sale_discount_amount',
+        'sale_final_price',
         'currency',
         'remaining_sessions',
         'remaining_minutes',
@@ -47,6 +52,10 @@ class ServicePackage extends Model
     protected $casts = [
         'price_paid' => 'decimal:2',
         'price_total' => 'decimal:2',
+        'sale_original_price' => 'decimal:2',
+        'sale_discount_value' => 'decimal:2',
+        'sale_discount_amount' => 'decimal:2',
+        'sale_final_price' => 'decimal:2',
         'remaining_sessions' => 'integer',
         'remaining_minutes' => 'integer',
         'snapshot_total_sessions' => 'integer',
@@ -64,6 +73,74 @@ class ServicePackage extends Model
         'remaining_to_pay_mkd',
         'next_allowed_date',
     ];
+
+    protected static function booted(): void
+    {
+        static::creating(function (ServicePackage $package) {
+            $package->initializeSalePriceSnapshot();
+        });
+    }
+
+    /**
+     * Freeze package commercial terms at the moment of sale.
+     *
+     * `price_total` remains synchronized with the final sale price for
+     * backwards compatibility with the existing Admin/Staff/Client APIs.
+     */
+    public function initializeSalePriceSnapshot(): void
+    {
+        $legacyTotal = $this->price_total ?? $this->price_paid ?? 0;
+        $finalPrice = (float) ($this->sale_final_price ?? $legacyTotal);
+
+        $servicePrice = null;
+        if ($this->service_id) {
+            $servicePrice = Service::query()
+                ->whereKey($this->service_id)
+                ->value('price');
+        }
+
+        $originalPrice = (float) ($this->sale_original_price
+            ?? $servicePrice
+            ?? $finalPrice);
+
+        $discountAmount = $this->sale_discount_amount !== null
+            ? (float) $this->sale_discount_amount
+            : max($originalPrice - $finalPrice, 0);
+
+        $discountType = $this->sale_discount_type;
+        $discountValue = $this->sale_discount_value !== null
+            ? (float) $this->sale_discount_value
+            : null;
+
+        if ($discountAmount > 0 && !$discountType) {
+            $discountType = 'fixed';
+            $discountValue = $discountValue ?? $discountAmount;
+        }
+
+        if ($discountAmount <= 0) {
+            $discountType = null;
+            $discountValue = null;
+            $discountAmount = 0;
+        }
+
+        $this->forceFill([
+            'sale_original_price' => round($originalPrice, 2),
+            'sale_discount_type' => $discountType,
+            'sale_discount_value' => $discountValue !== null ? round($discountValue, 2) : null,
+            'sale_discount_amount' => round($discountAmount, 2),
+            'sale_final_price' => round($finalPrice, 2),
+            // Compatibility with current controllers/frontends.
+            'price_total' => round($finalPrice, 2),
+        ]);
+    }
+
+    public function finalSalePrice(): float
+    {
+        return (float) ($this->sale_final_price
+            ?? $this->price_total
+            ?? $this->price_paid
+            ?? 0);
+    }
 
     public static function statuses(): array
     {
@@ -359,7 +436,7 @@ class ServicePackage extends Model
 
     public function priceTotalMkd(): float
     {
-        $total = (float) ($this->price_total ?? $this->price_paid ?? 0);
+        $total = $this->finalSalePrice();
 
         if ($this->packageCurrency() === 'EUR') {
             return round($total * self::EUR_TO_MKD, 2);

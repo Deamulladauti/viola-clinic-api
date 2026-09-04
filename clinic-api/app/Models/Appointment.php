@@ -31,6 +31,11 @@ class Appointment extends Model
         'starts_at',
         'duration_minutes',
         'price',
+        'sale_original_price',
+        'sale_discount_type',
+        'sale_discount_value',
+        'sale_discount_amount',
+        'sale_final_price',
         'customer_name',
         'customer_phone',
         'customer_email',
@@ -46,9 +51,79 @@ class Appointment extends Model
         'starts_at' => 'string',
         'duration_minutes' => 'integer',
         'price' => 'decimal:2',
+        'sale_original_price' => 'decimal:2',
+        'sale_discount_value' => 'decimal:2',
+        'sale_discount_amount' => 'decimal:2',
+        'sale_final_price' => 'decimal:2',
     ];
 
     protected $appends = ['amount_paid', 'remaining_to_pay'];
+
+    protected static function booted(): void
+    {
+        static::creating(function (Appointment $appointment) {
+            $appointment->initializeSalePriceSnapshot();
+        });
+    }
+
+    /**
+     * Freeze the commercial terms of a single treatment at the time it is sold.
+     *
+     * The legacy `price` column remains synchronized with the final sale price
+     * for backwards compatibility, but balances should use `sale_final_price`.
+     */
+    public function initializeSalePriceSnapshot(): void
+    {
+        $finalPrice = (float) ($this->sale_final_price ?? $this->price ?? 0);
+
+        $servicePrice = null;
+        if ($this->service_id) {
+            $servicePrice = Service::query()
+                ->whereKey($this->service_id)
+                ->value('price');
+        }
+
+        $originalPrice = (float) ($this->sale_original_price
+            ?? $servicePrice
+            ?? $finalPrice);
+
+        $discountAmount = $this->sale_discount_amount !== null
+            ? (float) $this->sale_discount_amount
+            : max($originalPrice - $finalPrice, 0);
+
+        $discountType = $this->sale_discount_type;
+        $discountValue = $this->sale_discount_value !== null
+            ? (float) $this->sale_discount_value
+            : null;
+
+        if ($discountAmount > 0 && !$discountType) {
+            // Before Task 9, any lower explicit sale price is preserved as a
+            // fixed discount. Task 9 will allow Admin to choose fixed/percent.
+            $discountType = 'fixed';
+            $discountValue = $discountValue ?? $discountAmount;
+        }
+
+        if ($discountAmount <= 0) {
+            $discountType = null;
+            $discountValue = null;
+            $discountAmount = 0;
+        }
+
+        $this->forceFill([
+            'sale_original_price' => round($originalPrice, 2),
+            'sale_discount_type' => $discountType,
+            'sale_discount_value' => $discountValue !== null ? round($discountValue, 2) : null,
+            'sale_discount_amount' => round($discountAmount, 2),
+            'sale_final_price' => round($finalPrice, 2),
+            // Compatibility with existing API/UI code.
+            'price' => round($finalPrice, 2),
+        ]);
+    }
+
+    public function finalSalePrice(): float
+    {
+        return (float) ($this->sale_final_price ?? $this->price ?? 0);
+    }
 
     public function service()
     {
@@ -198,7 +273,7 @@ class Appointment extends Model
             return 0.0;
         }
 
-        $total = (float) ($this->price ?? 0);
+        $total = $this->finalSalePrice();
 
         return max($total - $this->amount_paid, 0.0);
     }

@@ -149,7 +149,7 @@ class AdminAppointmentUpdateService
                 }
             }
 
-            $appointment->forceFill([
+            $updatePayload = [
                 'service_id' => $service->id,
                 'service_package_id' => $package?->id,
                 'staff_id' => $staff->id,
@@ -160,7 +160,25 @@ class AdminAppointmentUpdateService
                 'notes' => array_key_exists('notes', $data)
                     ? $data['notes']
                     : $appointment->notes,
-            ]);
+            ];
+
+            // Changing the treatment is a deliberate change to the unsold/
+            // future booking's commercial terms. Re-snapshot the new service
+            // price. Date/staff/time edits leave the original sale terms alone.
+            if ($serviceChanged) {
+                $originalPrice = (float) ($service->price ?? $newPrice);
+                $discountAmount = max($originalPrice - $newPrice, 0);
+
+                $updatePayload = array_merge($updatePayload, [
+                    'sale_original_price' => round($originalPrice, 2),
+                    'sale_discount_type' => $discountAmount > 0 ? 'fixed' : null,
+                    'sale_discount_value' => $discountAmount > 0 ? round($discountAmount, 2) : null,
+                    'sale_discount_amount' => round($discountAmount, 2),
+                    'sale_final_price' => round($newPrice, 2),
+                ]);
+            }
+
+            $appointment->forceFill($updatePayload);
             $appointment->save();
 
             $after = $this->auditSnapshot($appointment->refresh());
@@ -540,6 +558,11 @@ class AdminAppointmentUpdateService
             'starts_at' => substr((string) $appointment->starts_at, 0, 8),
             'duration_minutes' => (int) $appointment->duration_minutes,
             'price' => (float) $appointment->price,
+            'sale_original_price' => $appointment->sale_original_price !== null ? (float) $appointment->sale_original_price : null,
+            'sale_discount_type' => $appointment->sale_discount_type,
+            'sale_discount_value' => $appointment->sale_discount_value !== null ? (float) $appointment->sale_discount_value : null,
+            'sale_discount_amount' => $appointment->sale_discount_amount !== null ? (float) $appointment->sale_discount_amount : null,
+            'sale_final_price' => $appointment->sale_final_price !== null ? (float) $appointment->sale_final_price : null,
             'notes' => $appointment->notes,
             'status' => $appointment->status,
         ];

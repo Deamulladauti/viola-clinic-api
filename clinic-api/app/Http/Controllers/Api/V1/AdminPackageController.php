@@ -8,6 +8,7 @@ use App\Models\Service;
 use App\Models\ServicePackage;
 use App\Models\PackageLog;
 use App\Services\PackageUsageService;
+use App\Services\ManualSalePricingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
@@ -18,7 +19,7 @@ class AdminPackageController extends Controller
      * POST /api/v1/admin/packages/assign
      * Body: user_id, service_id, [price_total, currency, starts_on, notes]
      */
-    public function assign(AssignPackageRequest $request)
+    public function assign(AssignPackageRequest $request, ManualSalePricingService $pricing)
     {
         $service = Service::findOrFail($request->integer('service_id'));
 
@@ -34,9 +35,24 @@ class AdminPackageController extends Controller
             return response()->json(['message' => 'Package service must define included units.'], 422);
         }
 
-        $priceTotal = $request->filled('price_total')
-            ? (float) $request->price_total
-            : (float) $service->price;
+        $hasManualDiscount = $request->filled('sale_discount_type')
+            || $request->filled('sale_discount_value');
+
+        $saleTerms = $hasManualDiscount
+            ? $pricing->calculate(
+                originalPrice: (float) ($service->price ?? 0),
+                discountType: $request->input('sale_discount_type'),
+                discountValue: $request->input('sale_discount_value'),
+            )
+            : null;
+
+        // Keep the legacy price_total override compatible for older callers,
+        // but the new Admin UI uses explicit fixed/percentage discount terms.
+        $priceTotal = $saleTerms
+            ? $saleTerms['final_price']
+            : ($request->filled('price_total')
+                ? (float) $request->price_total
+                : (float) $service->price);
 
         $currency = strtoupper((string) $request->string('currency', 'EUR'));
         $assignedStaffId = $request->integer('assigned_staff_id') ?: null;
@@ -45,7 +61,7 @@ class AdminPackageController extends Controller
             return response()->json(['message' => 'Assigned staff is not qualified for this service.'], 422);
         }
 
-        $pkg = ServicePackage::create([
+        $packagePayload = [
             'user_id' => $request->integer('user_id'),
             'service_id' => $service->id,
             'assigned_staff_id' => $assignedStaffId,
@@ -67,7 +83,19 @@ class AdminPackageController extends Controller
             // Package expiry is no longer part of the clinic product rules.
             'expires_on' => null,
             'notes' => $request->string('notes'),
-        ]);
+        ];
+
+        if ($saleTerms) {
+            $packagePayload = array_merge($packagePayload, [
+                'sale_original_price' => $saleTerms['original_price'],
+                'sale_discount_type' => $saleTerms['discount_type'],
+                'sale_discount_value' => $saleTerms['discount_value'],
+                'sale_discount_amount' => $saleTerms['discount_amount'],
+                'sale_final_price' => $saleTerms['final_price'],
+            ]);
+        }
+
+        $pkg = ServicePackage::create($packagePayload);
 
         return response()->json([
             'data' => [
@@ -82,6 +110,11 @@ class AdminPackageController extends Controller
                 'staff_policy' => $pkg->snapshot_staff_policy,
                 'assigned_staff_id' => $pkg->assigned_staff_id,
                 'price_total' => (float) $pkg->price_total,
+                'sale_original_price' => (float) ($pkg->sale_original_price ?? $pkg->price_total ?? 0),
+                'sale_discount_type' => $pkg->sale_discount_type,
+                'sale_discount_value' => $pkg->sale_discount_value !== null ? (float) $pkg->sale_discount_value : null,
+                'sale_discount_amount' => (float) ($pkg->sale_discount_amount ?? 0),
+                'sale_final_price' => (float) ($pkg->sale_final_price ?? $pkg->price_total ?? 0),
                 'amount_paid' => (float) $pkg->amount_paid,
                 'remaining_balance' => (float) $pkg->remaining_to_pay,
                 'amount_paid_mkd' => (float) $pkg->amount_paid_mkd,
@@ -142,6 +175,11 @@ class AdminPackageController extends Controller
                     'remaining_sessions'       => $p->remaining_sessions,
                     'remaining_minutes'        => $p->remaining_minutes,
                     'price_total'              => $total ?: null,
+                    'sale_original_price'       => $p->sale_original_price !== null ? (float) $p->sale_original_price : null,
+                    'sale_discount_type'        => $p->sale_discount_type,
+                    'sale_discount_value'       => $p->sale_discount_value !== null ? (float) $p->sale_discount_value : null,
+                    'sale_discount_amount'      => (float) ($p->sale_discount_amount ?? 0),
+                    'sale_final_price'          => $p->sale_final_price !== null ? (float) $p->sale_final_price : $total,
                     'amount_paid'              => (float) ($p->amount_paid ?? 0),
                     'remaining_balance'        => (float) ($p->remaining_to_pay ?? 0),
                     'amount_paid_mkd'          => (float) ($p->amount_paid_mkd ?? 0),

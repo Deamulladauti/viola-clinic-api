@@ -20,6 +20,7 @@ class AdminClientAppointmentService
     public function __construct(
         private readonly AppointmentBookingValidator $bookingValidator,
         private readonly AppointmentCompletionService $appointmentCompletionService,
+        private readonly ManualSalePricingService $pricing,
     ) {
     }
 
@@ -103,8 +104,18 @@ class AdminClientAppointmentService
                 ? Appointment::STATUS_CONFIRMED
                 : $status;
 
-            $appointment = new Appointment();
-            $appointment->forceFill([
+            $hasManualSingleDiscount = $purchaseType === 'single'
+                && (!empty($data['sale_discount_type']) || array_key_exists('sale_discount_value', $data));
+
+            $singleSaleTerms = $hasManualSingleDiscount
+                ? $this->pricing->calculate(
+                    originalPrice: (float) ($service->price ?? 0),
+                    discountType: $data['sale_discount_type'] ?? null,
+                    discountValue: $data['sale_discount_value'] ?? null,
+                )
+                : null;
+
+            $appointmentPayload = [
                 'user_id' => $client->id,
                 'service_id' => $service->id,
                 'service_package_id' => $package?->id,
@@ -112,7 +123,9 @@ class AdminClientAppointmentService
                 'date' => $selectedDate->toDateString(),
                 'starts_at' => $startsAt,
                 'duration_minutes' => max(1, (int) ($service->duration_minutes ?? 60)),
-                'price' => (float) ($data['price'] ?? $service->price ?? 0),
+                'price' => $singleSaleTerms
+                    ? $singleSaleTerms['final_price']
+                    : (float) ($data['price'] ?? $service->price ?? 0),
                 'customer_name' => $client->name,
                 'customer_phone' => $client->phone,
                 'customer_email' => $client->email,
@@ -121,7 +134,20 @@ class AdminClientAppointmentService
                 'admin_notes' => $data['notes'] ?? null,
                 'reference_code' => $this->newReferenceCode(),
                 'source' => $isHistorical ? 'manual_import' : 'admin_booking',
-            ]);
+            ];
+
+            if ($singleSaleTerms) {
+                $appointmentPayload = array_merge($appointmentPayload, [
+                    'sale_original_price' => $singleSaleTerms['original_price'],
+                    'sale_discount_type' => $singleSaleTerms['discount_type'],
+                    'sale_discount_value' => $singleSaleTerms['discount_value'],
+                    'sale_discount_amount' => $singleSaleTerms['discount_amount'],
+                    'sale_final_price' => $singleSaleTerms['final_price'],
+                ]);
+            }
+
+            $appointment = new Appointment();
+            $appointment->forceFill($appointmentPayload);
             $appointment->save();
 
             if ($status === Appointment::STATUS_COMPLETED) {
@@ -281,8 +307,22 @@ class AdminClientAppointmentService
             ]);
         }
 
-        $package = new ServicePackage();
-        $package->forceFill([
+        $hasManualDiscount = !empty($packageData['sale_discount_type'])
+            || array_key_exists('sale_discount_value', $packageData);
+
+        $packageSaleTerms = $hasManualDiscount
+            ? $this->pricing->calculate(
+                originalPrice: (float) ($service->price ?? 0),
+                discountType: $packageData['sale_discount_type'] ?? null,
+                discountValue: $packageData['sale_discount_value'] ?? null,
+            )
+            : null;
+
+        $packagePrice = $packageSaleTerms
+            ? $packageSaleTerms['final_price']
+            : (float) ($packageData['price_total'] ?? $service->price ?? 0);
+
+        $packagePayload = [
             'user_id' => $client->id,
             'service_id' => $service->id,
             'service_name' => $service->name,
@@ -296,7 +336,7 @@ class AdminClientAppointmentService
             'snapshot_staff_policy' => (string) ($service->staff_policy ?? 'any_qualified_staff'),
             'snapshot_duration_minutes' => max(1, (int) ($service->duration_minutes ?? 60)),
             'assigned_staff_id' => null,
-            'price_total' => (float) ($packageData['price_total'] ?? $service->price ?? 0),
+            'price_total' => $packagePrice,
             'price_paid' => 0,
             'currency' => strtoupper((string) ($packageData['currency'] ?? 'EUR')),
             'status' => ServicePackage::STATUS_ACTIVE,
@@ -304,7 +344,20 @@ class AdminClientAppointmentService
             // Kept nullable in the database for backwards compatibility only.
             'expires_on' => null,
             'notes' => $packageData['notes'] ?? null,
-        ]);
+        ];
+
+        if ($packageSaleTerms) {
+            $packagePayload = array_merge($packagePayload, [
+                'sale_original_price' => $packageSaleTerms['original_price'],
+                'sale_discount_type' => $packageSaleTerms['discount_type'],
+                'sale_discount_value' => $packageSaleTerms['discount_value'],
+                'sale_discount_amount' => $packageSaleTerms['discount_amount'],
+                'sale_final_price' => $packageSaleTerms['final_price'],
+            ]);
+        }
+
+        $package = new ServicePackage();
+        $package->forceFill($packagePayload);
         $package->save();
 
         return $package;

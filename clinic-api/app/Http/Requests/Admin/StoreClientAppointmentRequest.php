@@ -32,7 +32,11 @@ class StoreClientAppointmentRequest extends FormRequest
                 Rule::in(['pending', 'confirmed', 'completed', 'cancelled', 'no_show', 'no-show']),
             ],
 
+            // Manual sale discount for a newly sold single treatment. Existing
+            // package sessions do not accept a new discount here.
             'price' => ['nullable', 'numeric', 'min:0'],
+            'sale_discount_type' => ['nullable', Rule::in(['fixed', 'percent']), 'required_with:sale_discount_value'],
+            'sale_discount_value' => ['nullable', 'numeric', 'min:0', 'required_with:sale_discount_type'],
             'notes' => ['nullable', 'string', 'max:10000'],
 
             'interval_override' => ['sometimes', 'boolean'],
@@ -53,6 +57,8 @@ class StoreClientAppointmentRequest extends FormRequest
 
             'package' => ['nullable', 'array'],
             'package.price_total' => ['nullable', 'numeric', 'min:0'],
+            'package.sale_discount_type' => ['nullable', Rule::in(['fixed', 'percent']), 'required_with:package.sale_discount_value'],
+            'package.sale_discount_value' => ['nullable', 'numeric', 'min:0', 'required_with:package.sale_discount_type'],
             'package.currency' => ['nullable', Rule::in(['EUR', 'MKD'])],
             'package.starts_on' => ['nullable', 'date_format:Y-m-d'],
             'package.notes' => ['nullable', 'string', 'max:5000'],
