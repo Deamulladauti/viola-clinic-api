@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Appointment;
 use App\Models\AppointmentLog;
+use App\Models\Offer;
 use App\Models\PackageLog;
 use App\Models\Service;
 use App\Models\ServicePackage;
@@ -21,6 +22,7 @@ class AdminClientAppointmentService
         private readonly AppointmentBookingValidator $bookingValidator,
         private readonly AppointmentCompletionService $appointmentCompletionService,
         private readonly ManualSalePricingService $pricing,
+        private readonly OfferPricingService $offerPricing,
     ) {
     }
 
@@ -104,16 +106,24 @@ class AdminClientAppointmentService
                 ? Appointment::STATUS_CONFIRMED
                 : $status;
 
-            $hasManualSingleDiscount = $purchaseType === 'single'
-                && (!empty($data['sale_discount_type']) || array_key_exists('sale_discount_value', $data));
+            $singleOffer = null;
+            $singleSaleTerms = null;
 
-            $singleSaleTerms = $hasManualSingleDiscount
-                ? $this->pricing->calculate(
+            if ($purchaseType === 'single' && !empty($data['offer_id'])) {
+                $singleOffer = Offer::query()
+                    ->with('services:id')
+                    ->findOrFail((int) $data['offer_id']);
+                $singleSaleTerms = $this->offerPricing->resolve($singleOffer, $service);
+            } elseif (
+                $purchaseType === 'single'
+                && (!empty($data['sale_discount_type']) || array_key_exists('sale_discount_value', $data))
+            ) {
+                $singleSaleTerms = $this->pricing->calculate(
                     originalPrice: (float) ($service->price ?? 0),
                     discountType: $data['sale_discount_type'] ?? null,
                     discountValue: $data['sale_discount_value'] ?? null,
-                )
-                : null;
+                );
+            }
 
             $appointmentPayload = [
                 'user_id' => $client->id,
@@ -143,6 +153,8 @@ class AdminClientAppointmentService
                     'sale_discount_value' => $singleSaleTerms['discount_value'],
                     'sale_discount_amount' => $singleSaleTerms['discount_amount'],
                     'sale_final_price' => $singleSaleTerms['final_price'],
+                    'sale_offer_id' => $singleOffer?->id,
+                    'sale_offer_name' => $singleOffer?->name,
                 ]);
             }
 
@@ -170,6 +182,8 @@ class AdminClientAppointmentService
                     'purchase_type' => $purchaseType,
                     'source' => $appointment->source,
                     'service_package_id' => $package?->id,
+                    'sale_offer_id' => $appointment->sale_offer_id ?? $package?->sale_offer_id,
+                    'sale_offer_name' => $appointment->sale_offer_name ?? $package?->sale_offer_name,
                     'interval_override' => (bool) ($data['interval_override'] ?? false),
                     'interval_override_reason' => $data['interval_override_reason'] ?? null,
                     'staff_override' => (bool) ($data['staff_override'] ?? false),
@@ -307,16 +321,24 @@ class AdminClientAppointmentService
             ]);
         }
 
-        $hasManualDiscount = !empty($packageData['sale_discount_type'])
-            || array_key_exists('sale_discount_value', $packageData);
+        $packageOffer = null;
+        $packageSaleTerms = null;
 
-        $packageSaleTerms = $hasManualDiscount
-            ? $this->pricing->calculate(
+        if (!empty($packageData['offer_id'])) {
+            $packageOffer = Offer::query()
+                ->with('services:id')
+                ->findOrFail((int) $packageData['offer_id']);
+            $packageSaleTerms = $this->offerPricing->resolve($packageOffer, $service);
+        } elseif (
+            !empty($packageData['sale_discount_type'])
+            || array_key_exists('sale_discount_value', $packageData)
+        ) {
+            $packageSaleTerms = $this->pricing->calculate(
                 originalPrice: (float) ($service->price ?? 0),
                 discountType: $packageData['sale_discount_type'] ?? null,
                 discountValue: $packageData['sale_discount_value'] ?? null,
-            )
-            : null;
+            );
+        }
 
         $packagePrice = $packageSaleTerms
             ? $packageSaleTerms['final_price']
@@ -353,6 +375,8 @@ class AdminClientAppointmentService
                 'sale_discount_value' => $packageSaleTerms['discount_value'],
                 'sale_discount_amount' => $packageSaleTerms['discount_amount'],
                 'sale_final_price' => $packageSaleTerms['final_price'],
+                'sale_offer_id' => $packageOffer?->id,
+                'sale_offer_name' => $packageOffer?->name,
             ]);
         }
 

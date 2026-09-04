@@ -43,6 +43,8 @@ class AdminClientAppointmentController extends Controller
                     'sale_discount_value' => $appointment->sale_discount_value !== null ? (float) $appointment->sale_discount_value : null,
                     'sale_discount_amount' => $appointment->sale_discount_amount !== null ? (float) $appointment->sale_discount_amount : 0.0,
                     'sale_final_price' => $appointment->sale_final_price !== null ? (float) $appointment->sale_final_price : (float) $appointment->price,
+                    'sale_offer_id' => $appointment->sale_offer_id,
+                    'sale_offer_name' => $appointment->sale_offer_name,
                     'notes' => $appointment->notes,
                     'customer' => [
                         'id' => $appointment->user?->id,
@@ -80,6 +82,8 @@ class AdminClientAppointmentController extends Controller
                     'sale_discount_value' => $package->sale_discount_value !== null ? (float) $package->sale_discount_value : null,
                     'sale_discount_amount' => $package->sale_discount_amount !== null ? (float) $package->sale_discount_amount : 0.0,
                     'sale_final_price' => $package->sale_final_price !== null ? (float) $package->sale_final_price : ($package->price_total !== null ? (float) $package->price_total : null),
+                    'sale_offer_id' => $package->sale_offer_id,
+                    'sale_offer_name' => $package->sale_offer_name,
                     'amount_paid' => (float) $package->amount_paid,
                     'remaining_to_pay' => (float) $package->remaining_to_pay,
                     'currency' => $package->currency,

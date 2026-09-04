@@ -175,6 +175,10 @@ class AdminAppointmentUpdateService
                     'sale_discount_value' => $discountAmount > 0 ? round($discountAmount, 2) : null,
                     'sale_discount_amount' => round($discountAmount, 2),
                     'sale_final_price' => round($newPrice, 2),
+                    // A configured offer belongs to the original service sale.
+                    // Changing treatment requires an explicit new sale decision.
+                    'sale_offer_id' => null,
+                    'sale_offer_name' => null,
                 ]);
             }
 
@@ -563,6 +567,8 @@ class AdminAppointmentUpdateService
             'sale_discount_value' => $appointment->sale_discount_value !== null ? (float) $appointment->sale_discount_value : null,
             'sale_discount_amount' => $appointment->sale_discount_amount !== null ? (float) $appointment->sale_discount_amount : null,
             'sale_final_price' => $appointment->sale_final_price !== null ? (float) $appointment->sale_final_price : null,
+            'sale_offer_id' => $appointment->sale_offer_id ? (int) $appointment->sale_offer_id : null,
+            'sale_offer_name' => $appointment->sale_offer_name,
             'notes' => $appointment->notes,
             'status' => $appointment->status,
         ];

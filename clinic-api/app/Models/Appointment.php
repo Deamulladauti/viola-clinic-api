@@ -36,6 +36,8 @@ class Appointment extends Model
         'sale_discount_value',
         'sale_discount_amount',
         'sale_final_price',
+        'sale_offer_id',
+        'sale_offer_name',
         'customer_name',
         'customer_phone',
         'customer_email',
@@ -55,6 +57,7 @@ class Appointment extends Model
         'sale_discount_value' => 'decimal:2',
         'sale_discount_amount' => 'decimal:2',
         'sale_final_price' => 'decimal:2',
+        'sale_offer_id' => 'integer',
     ];
 
     protected $appends = ['amount_paid', 'remaining_to_pay'];
@@ -123,6 +126,11 @@ class Appointment extends Model
     public function finalSalePrice(): float
     {
         return (float) ($this->sale_final_price ?? $this->price ?? 0);
+    }
+
+    public function offer()
+    {
+        return $this->belongsTo(Offer::class, 'sale_offer_id');
     }
 
     public function service()

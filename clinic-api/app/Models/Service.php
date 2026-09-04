@@ -145,6 +145,11 @@ class Service extends Model
         return $this->hasMany(ServicePackage::class);
     }
 
+    public function offers()
+    {
+        return $this->belongsToMany(Offer::class, 'offer_service')->withTimestamps();
+    }
+
     public function scopeActive($query)
     {
         return $query->where('is_active', true);

@@ -26,6 +26,7 @@ use App\Http\Controllers\Api\V1\StaffServiceController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Admin\AdminClientController;
 use App\Http\Controllers\Admin\AdminClientAppointmentController;
+use App\Http\Controllers\Admin\AdminOfferController;
 use App\Http\Controllers\Api\V1\PackageQuantityUsageController;
 use Illuminate\Support\Facades\Hash;
 use App\Http\Controllers\Admin\ExpenseCategoryController;
@@ -91,6 +92,12 @@ Route::prefix('v1')->group(function () {
         Route::post  ('categories',                [ServiceCategoryController::class, 'store']);
         Route::match (['put','patch'], 'categories/{category}', [ServiceCategoryController::class, 'update'])->whereNumber('category');
         Route::delete('categories/{category}',     [ServiceCategoryController::class, 'destroy'])->whereNumber('category');
+
+        // Offers / promotions
+        Route::get   ('offers/eligible',            [AdminOfferController::class, 'eligible']);
+        Route::get   ('offers',                     [AdminOfferController::class, 'index']);
+        Route::post  ('offers',                     [AdminOfferController::class, 'store']);
+        Route::patch ('offers/{offer}',             [AdminOfferController::class, 'update'])->whereNumber('offer');
 
         // Services
         Route::get   ('services',                  [ServiceController::class, 'index']);

@@ -7,8 +7,10 @@ use App\Http\Requests\Admin\AssignPackageRequest;
 use App\Models\Service;
 use App\Models\ServicePackage;
 use App\Models\PackageLog;
+use App\Models\Offer;
 use App\Services\PackageUsageService;
 use App\Services\ManualSalePricingService;
+use App\Services\OfferPricingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
@@ -19,7 +21,7 @@ class AdminPackageController extends Controller
      * POST /api/v1/admin/packages/assign
      * Body: user_id, service_id, [price_total, currency, starts_on, notes]
      */
-    public function assign(AssignPackageRequest $request, ManualSalePricingService $pricing)
+    public function assign(AssignPackageRequest $request, ManualSalePricingService $pricing, OfferPricingService $offerPricing)
     {
         $service = Service::findOrFail($request->integer('service_id'));
 
@@ -35,16 +37,24 @@ class AdminPackageController extends Controller
             return response()->json(['message' => 'Package service must define included units.'], 422);
         }
 
-        $hasManualDiscount = $request->filled('sale_discount_type')
-            || $request->filled('sale_discount_value');
+        $offer = null;
+        $saleTerms = null;
 
-        $saleTerms = $hasManualDiscount
-            ? $pricing->calculate(
+        if ($request->filled('offer_id')) {
+            $offer = Offer::query()
+                ->with('services:id')
+                ->findOrFail($request->integer('offer_id'));
+            $saleTerms = $offerPricing->resolve($offer, $service);
+        } elseif (
+            $request->filled('sale_discount_type')
+            || $request->filled('sale_discount_value')
+        ) {
+            $saleTerms = $pricing->calculate(
                 originalPrice: (float) ($service->price ?? 0),
                 discountType: $request->input('sale_discount_type'),
                 discountValue: $request->input('sale_discount_value'),
-            )
-            : null;
+            );
+        }
 
         // Keep the legacy price_total override compatible for older callers,
         // but the new Admin UI uses explicit fixed/percentage discount terms.
@@ -92,6 +102,8 @@ class AdminPackageController extends Controller
                 'sale_discount_value' => $saleTerms['discount_value'],
                 'sale_discount_amount' => $saleTerms['discount_amount'],
                 'sale_final_price' => $saleTerms['final_price'],
+                'sale_offer_id' => $offer?->id,
+                'sale_offer_name' => $offer?->name,
             ]);
         }
 
@@ -115,6 +127,8 @@ class AdminPackageController extends Controller
                 'sale_discount_value' => $pkg->sale_discount_value !== null ? (float) $pkg->sale_discount_value : null,
                 'sale_discount_amount' => (float) ($pkg->sale_discount_amount ?? 0),
                 'sale_final_price' => (float) ($pkg->sale_final_price ?? $pkg->price_total ?? 0),
+                'sale_offer_id' => $pkg->sale_offer_id,
+                'sale_offer_name' => $pkg->sale_offer_name,
                 'amount_paid' => (float) $pkg->amount_paid,
                 'remaining_balance' => (float) $pkg->remaining_to_pay,
                 'amount_paid_mkd' => (float) $pkg->amount_paid_mkd,
@@ -180,6 +194,8 @@ class AdminPackageController extends Controller
                     'sale_discount_value'       => $p->sale_discount_value !== null ? (float) $p->sale_discount_value : null,
                     'sale_discount_amount'      => (float) ($p->sale_discount_amount ?? 0),
                     'sale_final_price'          => $p->sale_final_price !== null ? (float) $p->sale_final_price : $total,
+                    'sale_offer_id'             => $p->sale_offer_id,
+                    'sale_offer_name'           => $p->sale_offer_name,
                     'amount_paid'              => (float) ($p->amount_paid ?? 0),
                     'remaining_balance'        => (float) ($p->remaining_to_pay ?? 0),
                     'amount_paid_mkd'          => (float) ($p->amount_paid_mkd ?? 0),

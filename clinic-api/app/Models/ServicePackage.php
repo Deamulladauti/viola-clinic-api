@@ -40,6 +40,8 @@ class ServicePackage extends Model
         'sale_discount_value',
         'sale_discount_amount',
         'sale_final_price',
+        'sale_offer_id',
+        'sale_offer_name',
         'currency',
         'remaining_sessions',
         'remaining_minutes',
@@ -56,6 +58,7 @@ class ServicePackage extends Model
         'sale_discount_value' => 'decimal:2',
         'sale_discount_amount' => 'decimal:2',
         'sale_final_price' => 'decimal:2',
+        'sale_offer_id' => 'integer',
         'remaining_sessions' => 'integer',
         'remaining_minutes' => 'integer',
         'snapshot_total_sessions' => 'integer',
@@ -156,6 +159,11 @@ class ServicePackage extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function offer(): BelongsTo
+    {
+        return $this->belongsTo(Offer::class, 'sale_offer_id');
     }
 
     public function service(): BelongsTo
