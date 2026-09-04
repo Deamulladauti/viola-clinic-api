@@ -11,6 +11,7 @@ use App\Models\Staff;
 use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 class AdminAppointmentUpdateService
@@ -164,11 +165,10 @@ class AdminAppointmentUpdateService
 
             $after = $this->auditSnapshot($appointment->refresh());
 
-            AppointmentLog::query()->create([
+            $logPayload = [
                 'appointment_id' => $appointment->id,
                 'user_id' => $admin->id,
                 'action' => 'appointment_edited',
-                'details' => 'Admin edited a scheduled appointment.',
                 'meta' => [
                     'before' => $before,
                     'after' => $after,
@@ -179,7 +179,17 @@ class AdminAppointmentUpdateService
                     'historical_correction' => $isHistoricalTarget && $isOpenCompletionCorrection,
                     'warnings' => $warnings,
                 ],
-            ]);
+            ];
+
+            // The current appointment_logs schema only guarantees
+            // appointment_id, user_id, action and meta. Some older/newer
+            // environments may also have a details column, so only write it
+            // when that column actually exists.
+            if (Schema::hasColumn('appointment_logs', 'details')) {
+                $logPayload['details'] = 'Admin edited a scheduled appointment.';
+            }
+
+            AppointmentLog::query()->create($logPayload);
 
             $appointment->load([
                 'service.category',
