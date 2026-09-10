@@ -178,6 +178,12 @@ class Appointment extends Model
         return $this->hasMany(PackagePayment::class, 'appointment_id');
     }
 
+    public function salePriceCorrections()
+    {
+        return $this->hasMany(SalePriceCorrection::class, 'subject_id')
+            ->where('subject_type', SalePriceCorrection::SUBJECT_APPOINTMENT);
+    }
+
     public static function statuses(): array
     {
         return [

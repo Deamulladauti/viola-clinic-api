@@ -27,6 +27,7 @@ use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Admin\AdminClientController;
 use App\Http\Controllers\Admin\AdminClientAppointmentController;
 use App\Http\Controllers\Admin\AdminOfferController;
+use App\Http\Controllers\Admin\AdminSalePriceCorrectionController;
 use App\Http\Controllers\Api\V1\PackageQuantityUsageController;
 use Illuminate\Support\Facades\Hash;
 use App\Http\Controllers\Admin\ExpenseCategoryController;
@@ -121,6 +122,10 @@ Route::prefix('v1')->group(function () {
         Route::patch('payments/{payment}/void', [PaymentController::class, 'voidByAdmin'])->whereNumber('payment');
         Route::get('appointments/calendar', [AppointmentAdminController::class, 'calendar']);
 
+        // Historical financial corrections (Task 11)
+        Route::patch('appointments/{appointment}/sale-price', [AdminSalePriceCorrectionController::class, 'correctAppointment'])->whereNumber('appointment');
+        Route::get('appointments/{appointment}/sale-price-corrections', [AdminSalePriceCorrectionController::class, 'appointmentHistory'])->whereNumber('appointment');
+
         Route::get('insights', [AdminInsightsController::class, 'index']);
 
         Route::get('/clients/{client}/payments', [PaymentController::class, 'listForClient'])
@@ -205,6 +210,8 @@ Route::prefix('v1')->group(function () {
         Route::patch ('packages/{package}/status',             [AdminPackageController::class, 'updateStatus'])->whereNumber('package');
         Route::get   ('users/{user}/packages',                 [AdminPackageController::class, 'listForUser'])->whereNumber('user');
         Route::post  ('packages/{package}/payments',           [AdminPackageController::class, 'addPayment'])->whereNumber('package');
+        Route::patch ('packages/{package}/sale-price',          [AdminSalePriceCorrectionController::class, 'correctPackage'])->whereNumber('package');
+        Route::get   ('packages/{package}/sale-price-corrections', [AdminSalePriceCorrectionController::class, 'packageHistory'])->whereNumber('package');
         
 
         // Appointment admin helpers

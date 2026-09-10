@@ -191,6 +191,12 @@ class ServicePackage extends Model
         return $this->hasMany(PackagePayment::class);
     }
 
+    public function salePriceCorrections(): HasMany
+    {
+        return $this->hasMany(SalePriceCorrection::class, 'subject_id')
+            ->where('subject_type', SalePriceCorrection::SUBJECT_PACKAGE);
+    }
+
     public function appointments(): HasMany
     {
         return $this->hasMany(Appointment::class, 'service_package_id');
