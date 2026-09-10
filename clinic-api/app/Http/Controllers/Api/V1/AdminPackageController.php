@@ -14,6 +14,7 @@ use App\Services\OfferPricingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class AdminPackageController extends Controller
 {
@@ -57,7 +58,7 @@ class AdminPackageController extends Controller
         }
 
         // Keep the legacy price_total override compatible for older callers,
-        // but the new Admin UI uses explicit fixed/percentage discount terms.
+        // but the Admin sale flow uses explicit offer/manual-discount terms.
         $priceTotal = $saleTerms
             ? $saleTerms['final_price']
             : ($request->filled('price_total')
@@ -107,7 +108,62 @@ class AdminPackageController extends Controller
             ]);
         }
 
-        $pkg = ServicePackage::create($packagePayload);
+        // Task 12: an optional initial payment/deposit is part of the sale.
+        // Validate it against the final snapshotted sale price before creating anything.
+        $initialPayment = $request->input('initial_payment');
+        $normalizedInitialPayment = null;
+
+        if (is_array($initialPayment)) {
+            $normalizedInitialPayment = $this->normalizePaymentData($initialPayment);
+            $packageTotalMkd = $currency === 'EUR'
+                ? round($priceTotal * ServicePackage::EUR_TO_MKD, 2)
+                : round($priceTotal, 2);
+
+            if ($packageTotalMkd <= 0) {
+                throw ValidationException::withMessages([
+                    'initial_payment.amount' => 'A payment cannot be recorded for a package with a zero final price.',
+                ]);
+            }
+
+            if ($normalizedInitialPayment['amount_mkd'] > $packageTotalMkd + 0.01) {
+                throw ValidationException::withMessages([
+                    'initial_payment.amount' => 'Initial payment exceeds the final package sale price.',
+                ]);
+            }
+        }
+
+        $admin = $request->user();
+
+        [$pkg, $payment] = DB::transaction(function () use (
+            $packagePayload,
+            $initialPayment,
+            $normalizedInitialPayment,
+            $admin
+        ) {
+            $pkg = ServicePackage::create($packagePayload);
+            $payment = null;
+
+            if (is_array($initialPayment) && is_array($normalizedInitialPayment)) {
+                $payment = $pkg->payments()->create([
+                    'service_package_id' => $pkg->id,
+                    // Selling a package does not create or require an appointment.
+                    'appointment_id' => null,
+                    'user_id' => $pkg->user_id,
+                    'staff_id' => null,
+                    'admin_id' => $admin?->id,
+                    'method' => $normalizedInitialPayment['method'],
+                    'amount' => round((float) $initialPayment['amount'], 2),
+                    'currency' => $normalizedInitialPayment['currency'],
+                    'exchange_rate' => $normalizedInitialPayment['exchange_rate'],
+                    'amount_mkd' => $normalizedInitialPayment['amount_mkd'],
+                    'notes' => $initialPayment['note'] ?? null,
+                ]);
+            }
+
+            return [$pkg, $payment];
+        });
+
+        $pkg->refresh();
 
         return response()->json([
             'data' => [
@@ -138,6 +194,16 @@ class AdminPackageController extends Controller
                 'remaining_minutes' => $pkg->remaining_minutes,
                 'starts_on' => optional($pkg->starts_on)?->toDateString(),
                 'expires_on' => optional($pkg->expires_on)?->toDateString(),
+                'initial_payment' => $payment ? [
+                    'id' => $payment->id,
+                    'amount' => (float) $payment->amount,
+                    'currency' => $payment->currency,
+                    'method' => $payment->method,
+                    'exchange_rate' => $payment->exchange_rate !== null ? (float) $payment->exchange_rate : null,
+                    'amount_mkd' => $payment->amount_mkd !== null ? (float) $payment->amount_mkd : null,
+                    'notes' => $payment->notes,
+                    'created_at' => optional($payment->created_at)?->toDateTimeString(),
+                ] : null,
             ],
         ], 201);
     }

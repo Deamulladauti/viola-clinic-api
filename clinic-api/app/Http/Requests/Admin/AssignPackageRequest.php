@@ -35,6 +35,23 @@ class AssignPackageRequest extends FormRequest
 
             // optional note
             'notes'       => ['nullable','string','max:2000'],
+
+            // Task 12: optional payment/deposit recorded at the moment the package is sold.
+            // It stays a normal package payment; no appointment is created.
+            'initial_payment' => ['nullable', 'array'],
+            'initial_payment.amount' => ['required_with:initial_payment', 'numeric', 'min:0.01'],
+            'initial_payment.method' => [
+                'required_with:initial_payment',
+                Rule::in(['cash', 'card']),
+            ],
+            'initial_payment.currency' => [
+                'nullable',
+                'string',
+                'size:3',
+                Rule::requiredIf(fn () => data_get($this->input('initial_payment', []), 'method') === 'cash'),
+                Rule::in(['EUR', 'MKD']),
+            ],
+            'initial_payment.note' => ['nullable', 'string', 'max:1000'],
         ];
     }
 
@@ -58,6 +75,12 @@ class AssignPackageRequest extends FormRequest
     {
         if ($this->filled('currency')) {
             $this->merge(['currency' => strtoupper((string) $this->input('currency'))]);
+        }
+
+        $initialPayment = $this->input('initial_payment');
+        if (is_array($initialPayment) && !empty($initialPayment['currency'])) {
+            $initialPayment['currency'] = strtoupper((string) $initialPayment['currency']);
+            $this->merge(['initial_payment' => $initialPayment]);
         }
     }
 }
