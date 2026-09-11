@@ -78,6 +78,12 @@ class User extends Authenticatable
         return asset('storage/' . $this->avatar_path);
     }
 
+
+    public function bookingGroups()
+    {
+        return $this->hasMany(BookingGroup::class, 'user_id');
+    }
+
     public function servicePackages()
     {
         return $this->hasMany(\App\Models\ServicePackage::class);

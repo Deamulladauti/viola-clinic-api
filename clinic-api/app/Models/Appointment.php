@@ -25,6 +25,7 @@ class Appointment extends Model
     protected $fillable = [
         'service_id',
         'service_package_id',
+        'booking_group_id',
         'staff_id',
         'user_id',
         'date',
@@ -156,6 +157,12 @@ class Appointment extends Model
     public function logs()
     {
         return $this->hasMany(AppointmentLog::class)->latest();
+    }
+
+
+    public function bookingGroup()
+    {
+        return $this->belongsTo(BookingGroup::class, 'booking_group_id');
     }
 
     public function servicePackage()
