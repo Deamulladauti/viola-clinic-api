@@ -209,6 +209,7 @@ Route::prefix('v1')->group(function () {
         Route::post  ('packages/assign',                       [AdminPackageController::class, 'assign']);
         Route::patch ('packages/{package}/status',             [AdminPackageController::class, 'updateStatus'])->whereNumber('package');
         Route::get   ('users/{user}/packages',                 [AdminPackageController::class, 'listForUser'])->whereNumber('user');
+        Route::get   ('packages/{package}/payments',           [PaymentController::class, 'listForPackage'])->whereNumber('package');
         Route::post  ('packages/{package}/payments',           [AdminPackageController::class, 'addPayment'])->whereNumber('package');
         Route::patch ('packages/{package}/sale-price',          [AdminSalePriceCorrectionController::class, 'correctPackage'])->whereNumber('package');
         Route::get   ('packages/{package}/sale-price-corrections', [AdminSalePriceCorrectionController::class, 'packageHistory'])->whereNumber('package');

@@ -69,6 +69,65 @@ class PaymentController extends Controller
         ]);
     }
 
+
+    /**
+     * GET /api/v1/admin/packages/{package}/payments
+     *
+     * Admin-only payment history for one package.
+     * Includes active and voided payments so Package Details can provide
+     * a complete audit trail without loading every payment for the client.
+     */
+    public function listForPackage(Request $request, ServicePackage $package)
+    {
+        $data = $request->validate([
+            'method' => ['sometimes', 'nullable', Rule::in(['cash', 'card'])],
+            'status' => ['sometimes', 'nullable', Rule::in(['active', 'voided', 'all'])],
+            'from' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+            'to' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+        ]);
+
+        $query = PackagePayment::query()
+            ->with([
+                'package:id,user_id,service_id,service_name,price_total,sale_final_price,currency,status',
+                'appointment:id,user_id,service_id,service_package_id,date,starts_at,price,sale_final_price,status,reference_code',
+                'appointment.service:id,name',
+                'staff:id,name,email,phone,user_id',
+                'admin:id,name,email',
+                'voidedBy:id,name,email',
+            ])
+            ->where('service_package_id', $package->id);
+
+        if (!empty($data['method'])) {
+            $query->where('method', $data['method']);
+        }
+
+        $status = $data['status'] ?? 'all';
+        if ($status === 'active') {
+            $query->whereNull('voided_at');
+        } elseif ($status === 'voided') {
+            $query->whereNotNull('voided_at');
+        }
+
+        if (!empty($data['from'])) {
+            $query->whereDate('created_at', '>=', $data['from']);
+        }
+
+        if (!empty($data['to'])) {
+            $query->whereDate('created_at', '<=', $data['to']);
+        }
+
+        $payments = $query
+            ->latest('id')
+            ->limit(300)
+            ->get();
+
+        return response()->json([
+            'data' => $payments
+                ->map(fn (PackagePayment $payment) => $this->presentPayment($payment))
+                ->values(),
+        ]);
+    }
+
     /**
      * POST /api/v1/admin/clients/{client}/payments
      *
