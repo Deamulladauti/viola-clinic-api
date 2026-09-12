@@ -14,6 +14,7 @@ class AdminBookingGroupService
     public function __construct(
         private readonly AdminClientAppointmentService $appointmentService,
         private readonly BookingGroupAvailabilityService $availabilityService,
+        private readonly BookingGroupStaffService $staffService,
     ) {
     }
 
@@ -56,6 +57,14 @@ class AdminBookingGroupService
                     Appointment::STATUS_CANCELLED,
                     Appointment::STATUS_NO_SHOW,
                 ], true));
+
+            // Task 18: V1 joined visits have exactly one staff owner. Enforce
+            // qualification for every selected treatment and any hard
+            // same-staff package locks before a BookingGroup row is written.
+            $this->staffService->assertStaffEligible(
+                $treatments,
+                (int) $data['staff_id'],
+            );
 
             // Task 17: before writing the booking group, validate the entire
             // joined visit as one continuous block. This catches a later

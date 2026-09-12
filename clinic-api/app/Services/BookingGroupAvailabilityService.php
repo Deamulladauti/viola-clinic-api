@@ -155,6 +155,17 @@ class BookingGroupAvailabilityService
             ]);
         }
 
+        // Task 18: a joined visit has one staff owner in V1. The selected
+        // staff member must therefore be qualified for every treatment, not
+        // only the first/current service shown by the frontend.
+        foreach ($services as $service) {
+            if ($service->staff()->whereKey($staff->id)->doesntExist()) {
+                throw ValidationException::withMessages([
+                    'staff_id' => "{$staff->name} is not qualified for {$service->name}. Choose one staff member who can perform every treatment in this joined visit.",
+                ]);
+            }
+        }
+
         $timezone = config('clinic.timezone', config('app.timezone'));
         $day = Carbon::createFromFormat('Y-m-d', $date, $timezone);
         $schedule = StaffSchedule::query()
