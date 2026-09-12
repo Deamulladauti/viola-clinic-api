@@ -1036,6 +1036,9 @@ class AppointmentAdminController extends Controller
             'payments.admin',
             'payments.voidedBy',
             'logs.user',
+            'bookingGroup.appointments.service',
+            'bookingGroup.appointments.staff',
+            'bookingGroup.appointments.package',
         ]);
 
         $service  = $appointment->service;
@@ -1043,6 +1046,70 @@ class AppointmentAdminController extends Controller
         $staff    = $appointment->staff;
         $user     = $appointment->user;
         $package  = $appointment->package;
+        $bookingGroup = $appointment->bookingGroup;
+
+        $bookingGroupData = null;
+        if ($bookingGroup && $bookingGroup->appointments->count() > 1) {
+            $groupAppointments = $bookingGroup->appointments
+                ->sortBy(fn (Appointment $item) => sprintf(
+                    '%s %s %010d',
+                    Carbon::parse($item->date)->toDateString(),
+                    substr((string) $item->starts_at, 0, 8),
+                    (int) $item->id,
+                ))
+                ->values();
+
+            $groupStatuses = $groupAppointments
+                ->pluck('status')
+                ->map(fn ($status) => (string) $status)
+                ->values();
+
+            $allCompleted = $groupStatuses->every(
+                fn (string $status) => $status === Appointment::STATUS_COMPLETED,
+            );
+
+            $canComplete = ! $allCompleted && $groupStatuses->every(
+                fn (string $status) => in_array($status, [
+                    Appointment::STATUS_PENDING,
+                    Appointment::STATUS_CONFIRMED,
+                    Appointment::STATUS_COMPLETED,
+                ], true),
+            );
+
+            $bookingGroupData = [
+                'id' => $bookingGroup->id,
+                'client_id' => $bookingGroup->user_id,
+                'treatment_count' => $groupAppointments->count(),
+                'total_duration_minutes' => (int) $groupAppointments->sum(
+                    fn (Appointment $item) => max(1, (int) $item->duration_minutes),
+                ),
+                'all_completed' => $allCompleted,
+                'can_complete' => $canComplete,
+                'appointments' => $groupAppointments->map(function (Appointment $item) {
+                    return [
+                        'id' => $item->id,
+                        'status' => $item->status,
+                        'date' => Carbon::parse($item->date)->toDateString(),
+                        'starts_at' => (string) $item->starts_at,
+                        'duration_minutes' => (int) $item->duration_minutes,
+                        'service_package_id' => $item->service_package_id,
+                        'service' => $item->service ? [
+                            'id' => $item->service->id,
+                            'name' => $item->service->name,
+                        ] : null,
+                        'staff' => $item->staff ? [
+                            'id' => $item->staff->id,
+                            'name' => $item->staff->name,
+                        ] : null,
+                        'package' => $item->package ? [
+                            'id' => $item->package->id,
+                            'remaining_sessions' => $item->package->remaining_sessions,
+                            'status' => $item->package->status,
+                        ] : null,
+                    ];
+                })->values(),
+            ];
+        }
 
         // ---------------------------------------------------------
         // Payment summary
@@ -1198,6 +1265,11 @@ class AppointmentAdminController extends Controller
                 'email' => $staff->email,
                 'phone' => $staff->phone,
             ] : null,
+
+            // Task 19: a joined visit remains several independent appointments,
+            // but booking details expose the shared group so Admin can complete
+            // every treatment through one atomic action.
+            'booking_group' => $bookingGroupData,
 
             'package' => $package ? [
                 'id'           => $package->id,
