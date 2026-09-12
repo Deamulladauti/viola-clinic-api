@@ -13,6 +13,7 @@ class AdminBookingGroupService
 {
     public function __construct(
         private readonly AdminClientAppointmentService $appointmentService,
+        private readonly BookingGroupAvailabilityService $availabilityService,
     ) {
     }
 
@@ -45,12 +46,43 @@ class AdminBookingGroupService
                 ]);
             }
 
+            $timezone = config('clinic.timezone', config('app.timezone'));
+            $selectedDate = Carbon::createFromFormat('Y-m-d', (string) $data['date'], $timezone)->startOfDay();
+            $today = Carbon::today($timezone);
+            $requestedStatus = str_replace('-', '_', (string) ($data['status'] ?? 'confirmed'));
+            $isHistorical = $selectedDate->lt($today)
+                || ($selectedDate->lte($today) && in_array($requestedStatus, [
+                    Appointment::STATUS_COMPLETED,
+                    Appointment::STATUS_CANCELLED,
+                    Appointment::STATUS_NO_SHOW,
+                ], true));
+
+            // Task 17: before writing the booking group, validate the entire
+            // joined visit as one continuous block. This catches a later
+            // conflict even when the first treatment would fit by itself.
+            if (!$isHistorical) {
+                if (blank($data['starts_at'] ?? null)) {
+                    throw ValidationException::withMessages([
+                        'starts_at' => 'Choose a start time for the joined booking.',
+                    ]);
+                }
+
+                $this->availabilityService->validateBlock(
+                    array_map(
+                        fn (array $treatment) => (int) $treatment['service_id'],
+                        $treatments,
+                    ),
+                    (int) $data['staff_id'],
+                    (string) $data['date'],
+                    (string) $data['starts_at'],
+                );
+            }
+
             $group = BookingGroup::query()->create([
                 'user_id' => $client->id,
                 'created_by_user_id' => $admin->id,
             ]);
 
-            $timezone = config('clinic.timezone', config('app.timezone'));
             $currentStart = filled($data['starts_at'] ?? null)
                 ? Carbon::createFromFormat('H:i', (string) $data['starts_at'], $timezone)
                 : null;
@@ -101,9 +133,9 @@ class AdminBookingGroupService
                     $warnings[] = sprintf('Treatment %d: %s', $index + 1, $warning);
                 }
 
-                // Task 16 only needs atomic creation. We sequence the underlying
-                // records so they do not overlap one another. Task 17 will add a
-                // dedicated whole-block availability calculation/preflight.
+                // Each appointment keeps its own record, but the selected staff
+                // member is reserved continuously from the first treatment start
+                // through the end of the final treatment.
                 if ($currentStart) {
                     $currentStart = $currentStart->copy()->addMinutes(
                         max(1, (int) $appointment->duration_minutes),

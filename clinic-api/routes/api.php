@@ -27,6 +27,7 @@ use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Admin\AdminClientController;
 use App\Http\Controllers\Admin\AdminClientAppointmentController;
 use App\Http\Controllers\Admin\AdminClientBookingGroupController;
+use App\Http\Controllers\Admin\AdminBookingGroupAvailabilityController;
 use App\Http\Controllers\Admin\AdminOfferController;
 use App\Http\Controllers\Admin\AdminSalePriceCorrectionController;
 use App\Http\Controllers\Api\V1\PackageQuantityUsageController;
@@ -160,6 +161,7 @@ Route::prefix('v1')->group(function () {
 
         Route::get('/clients/{client}/appointments', [AppointmentAdminController::class, 'clientAppointments'])->whereNumber('client');
         Route::post('/clients/{client}/appointments', [AdminClientAppointmentController::class, 'store'])->whereNumber('client');
+        Route::get('/booking-groups/availability', [AdminBookingGroupAvailabilityController::class, 'index']);
         Route::post('/clients/{client}/booking-groups', [AdminClientBookingGroupController::class, 'store'])->whereNumber('client');
 
         // Temporary legacy endpoint. Keep until Phase 3 moves the Expo UI to the canonical route above.
