@@ -112,10 +112,19 @@ class AppointmentAdminController extends Controller
                 'staff',
                 'user',
                 'servicePackage',
+                'bookingGroup.appointments.service.category',
+                'bookingGroup.appointments.staff',
+                'bookingGroup.appointments.user',
+                'bookingGroup.appointments.servicePackage',
                 // If you have a payments relation on Appointment, uncomment:
                 // 'payments',
             ])
-            ->whereBetween('date', [$from->toDateString(), $to->toDateString()]);
+            // Use whereDate instead of whereBetween with plain YYYY-MM-DD strings.
+            // Appointment::date is cast as a date and SQLite stores it as a midnight
+            // datetime (e.g. 2026-09-12 00:00:00), while MySQL may use DATE.
+            // whereDate keeps the calendar range portable across both databases.
+            ->whereDate('date', '>=', $from->toDateString())
+            ->whereDate('date', '<=', $to->toDateString());
 
         // status filter: supports CSV or array
         if (!empty($data['status'])) {
@@ -144,7 +153,22 @@ class AppointmentAdminController extends Controller
 
         // Package session progress is calculated in the backend so the calendar
         // never has to infer session position from a service/package name.
-        $packageSessionProgress = $this->buildCalendarPackageSessionProgress($appointments);
+        // Include every member of a visible booking group when calculating package
+        // session progress. This keeps the joined-visit treatment lines accurate even
+        // if a status filter caused one sibling appointment to be omitted from the
+        // top-level calendar query.
+        $sessionProgressAppointments = $appointments
+            ->flatMap(function (Appointment $appointment) {
+                if ($appointment->bookingGroup?->appointments?->isNotEmpty()) {
+                    return $appointment->bookingGroup->appointments;
+                }
+
+                return collect([$appointment]);
+            })
+            ->unique('id')
+            ->values();
+
+        $packageSessionProgress = $this->buildCalendarPackageSessionProgress($sessionProgressAppointments);
 
         $items = $appointments->map(function (Appointment $a) use ($packageSessionProgress) {
             $service  = $a->service;
@@ -208,6 +232,11 @@ class AppointmentAdminController extends Controller
                 // Null for normal single appointments, cancellations/no-shows,
                 // or package records that do not represent session-based usage.
                 'package_session' => $packageSessionProgress[$a->id] ?? null,
+
+                // Every appointment remains independently addressable, but the
+                // calendar receives enough group metadata to render the whole visit
+                // as one visual booking without inventing a combined service.
+                'booking_group' => $this->calendarBookingGroupData($a, $packageSessionProgress),
             ];
         })->values();
 
@@ -216,6 +245,113 @@ class AppointmentAdminController extends Controller
             'to'    => $data['to'],
             'items' => $items,
         ]);
+    }
+
+    /**
+     * Calendar-facing representation of a joined visit.
+     *
+     * The underlying appointments stay independent records. This payload only
+     * gives the Admin UI a safe way to collapse siblings into one visual card.
+     */
+    private function calendarBookingGroupData(Appointment $appointment, array $packageSessionProgress): ?array
+    {
+        if (!$appointment->booking_group_id || !$appointment->bookingGroup) {
+            return null;
+        }
+
+        $members = $appointment->bookingGroup->appointments
+            ->sortBy(function (Appointment $member) {
+                $date = $member->date instanceof Carbon
+                    ? $member->date->toDateString()
+                    : Carbon::parse($member->date)->toDateString();
+
+                return sprintf('%s %s %010d', $date, (string) $member->starts_at, (int) $member->id);
+            })
+            ->values();
+
+        if ($members->count() < 2) {
+            return null;
+        }
+
+        $groupStart = null;
+        $groupEnd = null;
+        $totalDuration = 0;
+
+        $treatments = $members->map(function (Appointment $member) use (
+            $packageSessionProgress,
+            &$groupStart,
+            &$groupEnd,
+            &$totalDuration,
+        ) {
+            $service = $member->service;
+            $category = $service?->category;
+
+            $dateStr = $member->date instanceof Carbon
+                ? $member->date->toDateString()
+                : Carbon::parse($member->date)->toDateString();
+
+            $startTime = (string) $member->starts_at;
+            $startTime = strlen($startTime) === 5 ? $startTime . ':00' : $startTime;
+            $duration = (int) ($member->duration_minutes ?? $service?->duration_minutes ?? 0);
+            $start = Carbon::parse($dateStr . ' ' . $startTime);
+            $end = (clone $start)->addMinutes(max(0, $duration));
+
+            if ($groupStart === null || $start->lt($groupStart)) {
+                $groupStart = $start->copy();
+            }
+            if ($groupEnd === null || $end->gt($groupEnd)) {
+                $groupEnd = $end->copy();
+            }
+
+            $totalDuration += max(0, $duration);
+
+            return [
+                'appointment_id' => (int) $member->id,
+                'status' => (string) $member->status,
+                'time' => substr($startTime, 0, 5),
+                'duration_minutes' => $duration,
+                'service' => $service ? [
+                    'id' => (int) $service->id,
+                    'name' => $service->name,
+                    'category' => $category?->name,
+                ] : null,
+                'package_session' => $packageSessionProgress[$member->id] ?? null,
+            ];
+        });
+
+        $statuses = $members
+            ->pluck('status')
+            ->filter()
+            ->unique()
+            ->values();
+
+        $staffIds = $members
+            ->pluck('staff_id')
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        $sharedStaff = $staffIds->count() === 1 ? $members->first()?->staff : null;
+
+        return [
+            'id' => (int) $appointment->bookingGroup->id,
+            'primary_appointment_id' => (int) $members->first()->id,
+            'appointment_ids' => $members->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
+            'treatment_count' => $members->count(),
+            'status' => $statuses->count() === 1 ? (string) $statuses->first() : 'mixed',
+            'date' => $groupStart?->toDateString(),
+            'time' => $groupStart?->format('H:i'),
+            'end_time' => $groupEnd?->format('H:i'),
+            'starts_at' => $groupStart?->toIso8601String(),
+            'ends_at' => $groupEnd?->toIso8601String(),
+            'total_duration_minutes' => $totalDuration,
+            'staff' => $sharedStaff ? [
+                'id' => (int) $sharedStaff->id,
+                'name' => $sharedStaff->name,
+            ] : null,
+            'treatments' => $treatments->values()->all(),
+        ];
     }
 
     /**
