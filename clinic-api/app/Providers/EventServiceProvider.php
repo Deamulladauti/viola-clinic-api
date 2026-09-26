@@ -12,8 +12,8 @@ class EventServiceProvider extends ServiceProvider
      * @var array<class-string, array<int, class-string>>
      */
     protected $listen = [
-        \App\Events\AppointmentBookedEvent::class => [
-            \App\Listeners\SendNotificationOnAppointmentBooked::class,
+        \App\Events\ClinicNotificationEvent::class => [
+            \App\Listeners\SendClientClinicNotification::class,
         ],
         \App\Events\AppointmentStatusChangedEvent::class => [
             \App\Listeners\SendNotificationOnAppointmentStatusChanged::class,

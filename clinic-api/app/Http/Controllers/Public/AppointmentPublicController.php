@@ -411,10 +411,6 @@ class AppointmentPublicController extends Controller
         });
 
         $appt->loadMissing(['service', 'client', 'staff.user', 'package']);
-        event(new AppointmentBookedEvent($appt));
-        if (class_exists(\App\Events\AppointmentBooked::class)) {
-            event(new \App\Events\AppointmentBooked($appt));
-        }
 
         return response()->json([
             'message' => 'Appointment booked',
