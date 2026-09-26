@@ -95,6 +95,10 @@ Route::prefix('v1')->group(function () {
         Route::patch('me/notifications/read-all', [MeNotificationsController::class, 'markAllRead']);
         Route::patch('me/notifications/{id}/read', [MeNotificationsController::class, 'markRead']);
         Route::delete('me/notifications/{id}', [MeNotificationsController::class, 'destroy']);
+        Route::post('me/push-devices', [\App\Http\Controllers\Api\V1\MePushDeviceController::class, 'store']);
+        Route::delete('me/push-devices', [\App\Http\Controllers\Api\V1\MePushDeviceController::class, 'destroy']);
+        Route::get('me/notification-preferences', [\App\Http\Controllers\Api\V1\MePushDeviceController::class, 'preferences']);
+        Route::patch('me/notification-preferences', [\App\Http\Controllers\Api\V1\MePushDeviceController::class, 'updatePreferences']);
 
     });
 
