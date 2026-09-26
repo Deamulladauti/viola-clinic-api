@@ -28,9 +28,20 @@ final class AppointmentNotificationObserver
     public function updated(Appointment $appointment): void
     {
         $events = app(ClinicNotificationEvents::class);
+        $origin = auth()->user()?->hasRole('client') ? 'client_action' : 'appointment_model';
         if ($appointment->wasChanged('status') && $appointment->status === Appointment::STATUS_CANCELLED) {
-            $events->emit(ClinicNotificationEvents::CANCELLED, $appointment, 'appointment_model', [], null, (string) $appointment->getOriginal('status'));
+            $events->emit(ClinicNotificationEvents::CANCELLED, $appointment, $origin, [], null, (string) $appointment->getOriginal('status'));
             return;
+        }
+        if ($appointment->wasChanged('staff_id')) {
+            $previousStaffId = $appointment->getOriginal('staff_id');
+            $events->emit(
+                ClinicNotificationEvents::STAFF_REASSIGNED,
+                $appointment,
+                $origin,
+                ['staff_id' => ['from' => $previousStaffId, 'to' => $appointment->staff_id]],
+                $previousStaffId !== null ? (int) $previousStaffId : null,
+            );
         }
         if ($appointment->wasChanged(['date', 'starts_at'])) {
             $changes = [];
@@ -39,7 +50,7 @@ final class AppointmentNotificationObserver
                     $changes[$field] = ['from' => (string) $appointment->getOriginal($field), 'to' => (string) $appointment->{$field}];
                 }
             }
-            $events->emit(ClinicNotificationEvents::RESCHEDULED, $appointment, 'appointment_model', $changes);
+            $events->emit(ClinicNotificationEvents::RESCHEDULED, $appointment, $origin, $changes);
         }
     }
 }

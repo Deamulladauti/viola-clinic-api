@@ -14,6 +14,7 @@ class MeNotificationsController extends Controller
         $items = $user->notifications()->latest()->paginate(20);
 
         return response()->json([
+            'unread_count' => $user->unreadNotifications()->count(),
             'data' => $items->through(function ($n) {
                 return [
                     'id'         => $n->id,
@@ -31,6 +32,19 @@ class MeNotificationsController extends Controller
                 'total'        => $items->total(),
             ],
         ]);
+    }
+
+    // GET /api/v1/me/notifications/unread-count
+    public function unreadCount(Request $request)
+    {
+        return response()->json(['unread_count' => $request->user()->unreadNotifications()->count()]);
+    }
+
+    // PATCH /api/v1/me/notifications/read-all
+    public function markAllRead(Request $request)
+    {
+        $request->user()->unreadNotifications()->update(['read_at' => now()]);
+        return response()->json(['ok' => true, 'unread_count' => 0]);
     }
 
     // PATCH /api/v1/me/notifications/{id}/read

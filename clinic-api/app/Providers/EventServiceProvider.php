@@ -14,6 +14,8 @@ class EventServiceProvider extends ServiceProvider
     protected $listen = [
         \App\Events\ClinicNotificationEvent::class => [
             \App\Listeners\SendClientClinicNotification::class,
+            \App\Listeners\SendStaffClinicNotification::class,
+            \App\Listeners\SendAdminClinicNotification::class,
         ],
         \App\Events\AppointmentStatusChangedEvent::class => [
             \App\Listeners\SendNotificationOnAppointmentStatusChanged::class,
