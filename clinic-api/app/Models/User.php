@@ -79,6 +79,17 @@ class User extends Authenticatable
     }
 
 
+    /**
+     * A clinic client exists independently of mobile authentication.
+     * Admin-created clients have no password; registered clients have one.
+     * This is computed rather than persisted to avoid stale/conflicting states.
+     * The same users.id remains the owner of appointments, packages and payments.
+     */
+    public function getClientAccountStateAttribute(): string
+    {
+        return empty($this->password) ? 'no_login' : 'linked';
+    }
+
     public function bookingGroups()
     {
         return $this->hasMany(BookingGroup::class, 'user_id');

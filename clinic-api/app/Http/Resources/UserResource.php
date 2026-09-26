@@ -30,6 +30,7 @@ class UserResource extends JsonResource
             'id'        => $this->id,
             'name'      => $this->name,
             'email'     => $this->email,
+            'account_state' => $this->hasRole('client') ? $this->client_account_state : null,
             'role'      => $roles->first(),
             'roles'     => $roles->values(),
             'createdAt' => $this->created_at?->toISOString(),

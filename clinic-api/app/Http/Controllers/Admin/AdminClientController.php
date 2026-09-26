@@ -346,6 +346,8 @@ class AdminClientController extends Controller
             'last_name' => $lastName,
             'email' => $user->email,
             'phone' => $user->phone,
+            'account_state' => $user->client_account_state,
+            'has_app_login' => $user->client_account_state === 'linked',
         ];
     }
 
@@ -369,6 +371,8 @@ class AdminClientController extends Controller
             'last_name' => $lastName,
             'email' => $user->email,
             'phone' => $user->phone,
+            'account_state' => $user->client_account_state,
+            'has_app_login' => $user->client_account_state === 'linked',
             'address_line1' => $user->address_line1,
             'address_line2' => $user->address_line2,
             'city' => $user->city,
