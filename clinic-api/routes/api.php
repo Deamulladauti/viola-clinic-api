@@ -32,11 +32,13 @@ use App\Http\Controllers\Admin\AdminBookingGroupStaffController;
 use App\Http\Controllers\Admin\AdminBookingGroupCompletionController;
 use App\Http\Controllers\Admin\AdminOfferController;
 use App\Http\Controllers\Admin\AdminSalePriceCorrectionController;
+use App\Http\Controllers\Admin\AdminNoShowPolicyController;
 use App\Http\Controllers\Api\V1\PackageQuantityUsageController;
 use Illuminate\Support\Facades\Hash;
 use App\Http\Controllers\Admin\ExpenseCategoryController;
 use App\Http\Controllers\Admin\ExpenseController;
 use App\Http\Controllers\Api\V1\ClientNoteController;
+use App\Http\Controllers\Admin\AdminPackageNoShowProgressController;
 
 
 Route::prefix('v1')->group(function () {
@@ -92,6 +94,10 @@ Route::prefix('v1')->group(function () {
 
         Route::post('me/change-password', [MeController::class, 'changePassword']);
 
+        // No-show penalty policy (Task 22)
+        Route::get('settings/no-show-policy', [AdminNoShowPolicyController::class, 'show']);
+        Route::patch('settings/no-show-policy', [AdminNoShowPolicyController::class, 'update']);
+
         // Categories
         Route::get   ('categories',                [ServiceCategoryController::class, 'index']);
         Route::post  ('categories',                [ServiceCategoryController::class, 'store']);
@@ -140,6 +146,8 @@ Route::prefix('v1')->group(function () {
 
         Route::patch('payments/{payment}/void', [PaymentController::class, 'voidByAdmin'])
             ->whereNumber('payment');
+
+        Route::get('packages/{package}/no-show-progress',[AdminPackageNoShowProgressController::class,'show'])->whereNumber('package');
 
 
         Route::get('expense-categories', [ExpenseCategoryController::class, 'index']);
