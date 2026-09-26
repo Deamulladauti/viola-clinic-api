@@ -1775,6 +1775,10 @@ class AppointmentAdminController extends Controller
                 }
                 $appointment->save();
 
+                if ($to === Appointment::STATUS_NO_SHOW && $from !== Appointment::STATUS_NO_SHOW) {
+                    app(\App\Services\NoShowPenaltyService::class)->applyFor($appointment, optional($request->user())->id);
+                }
+
                 AppointmentLog::create([
                     'appointment_id' => $appointment->id,
                     'user_id' => optional($request->user())->id,

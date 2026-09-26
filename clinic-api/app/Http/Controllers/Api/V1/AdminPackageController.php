@@ -385,6 +385,8 @@ class AdminPackageController extends Controller
                     'occurred_on' => optional($log->occurred_on)?->toDateString(),
                     'used_at' => optional($log->used_at)?->toDateTimeString(),
                     'source' => $log->source,
+                    'penalty_trigger_appointment_id' => $log->penalty_trigger_appointment_id,
+                    'penalty_policy_snapshot' => $log->penalty_policy_snapshot,
                     'staff' => $log->staff ? ['id' => $log->staff->id, 'name' => $log->staff->name] : null,
                     'appointment_id' => $log->appointment_id,
                     'note' => $log->note,

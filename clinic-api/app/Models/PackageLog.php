@@ -13,6 +13,7 @@ class PackageLog extends Model
     public const SOURCE_AUTOMATIC = 'automatic';
     public const SOURCE_MANUAL = 'manual';
     public const SOURCE_IMPORTED = 'imported';
+    public const SOURCE_NO_SHOW_PENALTY = 'no_show_penalty';
 
     protected $fillable = [
         'service_package_id',
@@ -33,6 +34,8 @@ class PackageLog extends Model
         'voided_at',
         'voided_by_id',
         'void_reason',
+        'penalty_trigger_appointment_id',
+        'penalty_policy_snapshot',
     ];
 
     protected $casts = [
@@ -43,6 +46,7 @@ class PackageLog extends Model
         'used_at' => 'datetime',
         'occurred_on' => 'date',
         'voided_at' => 'datetime',
+        'penalty_policy_snapshot' => 'array',
     ];
 
     public function package(): BelongsTo

@@ -39,6 +39,7 @@ use App\Http\Controllers\Admin\ExpenseCategoryController;
 use App\Http\Controllers\Admin\ExpenseController;
 use App\Http\Controllers\Api\V1\ClientNoteController;
 use App\Http\Controllers\Admin\AdminPackageNoShowProgressController;
+use App\Http\Controllers\Admin\AdminPackagePenaltyVoidController;
 
 
 Route::prefix('v1')->group(function () {
@@ -193,6 +194,7 @@ Route::prefix('v1')->group(function () {
 
         // NEW
         Route::get('/packages/{package}/logs', [AdminPackageController::class, 'logs']);
+        Route::post('/packages/{package}/penalties/{log}/void', [AdminPackagePenaltyVoidController::class, 'store'])->whereNumber(['package', 'log']);
         Route::post('/packages/{package}/usage', [PackageQuantityUsageController::class, 'storeAdmin'])->whereNumber('package');
         // Backward-compatible alias. Session payloads are rejected; only quantity/minute use is accepted.
         Route::post('/packages/{package}/use', [PackageQuantityUsageController::class, 'storeAdmin'])->whereNumber('package');

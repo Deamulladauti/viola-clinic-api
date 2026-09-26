@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Appointment;
 use App\Models\NoShowPolicySetting;
+use App\Models\PackageLog;
 use App\Models\Service;
 use App\Models\ServicePackage;
 use Illuminate\Http\JsonResponse;
@@ -42,6 +43,13 @@ class AdminPackageNoShowProgressController extends Controller
             ? 0
             : (($total - 1) % $threshold) + 1;
 
+        $penalties = PackageLog::query()
+            ->where('service_package_id', $package->id)
+            ->where('source', PackageLog::SOURCE_NO_SHOW_PENALTY)
+            ->whereNull('voided_at');
+        $penaltyCount = (clone $penalties)->count();
+        $deductedSessions = (clone $penalties)->sum('used_sessions');
+
         return response()->json([
             'data' => [
                 'package_id' => (int) $package->id,
@@ -73,7 +81,9 @@ class AdminPackageNoShowProgressController extends Controller
                 'threshold_reached' =>
                     $thresholdsMet > 0,
 
-                'penalty_deduction_active' => false,
+                'penalty_deduction_active' => (bool) $setting->is_enabled,
+                'penalties_applied' => $penaltyCount,
+                'penalty_sessions_deducted' => (int) $deductedSessions,
             ],
         ]);
     }

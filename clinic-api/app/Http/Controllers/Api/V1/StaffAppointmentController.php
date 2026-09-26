@@ -658,6 +658,10 @@ class StaffAppointmentController extends Controller
 
             $appointment->save();
 
+            if ($originalStatus !== Appointment::STATUS_NO_SHOW && $appointment->status === Appointment::STATUS_NO_SHOW) {
+                app(\App\Services\NoShowPenaltyService::class)->applyFor($appointment, optional(request()->user())->id);
+            }
+
             if ($appointment->wasChanged('status')) {
                 AppointmentLog::create([
                     'appointment_id' => $appointment->id,
