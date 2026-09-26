@@ -10,6 +10,7 @@ use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\DB;
 
 class AuthController extends Controller
 {
@@ -31,37 +32,48 @@ class AuthController extends Controller
          * Find a pre-created client even if the phone was saved with
          * spaces, dashes, brackets, or a leading plus sign.
          */
-        $existing = $this->findUserByPhone($data['phone']);
-
-        if ($existing) {
-            /*
-             * A password means the account has already completed registration.
-             */
-            if (! empty($existing->password)) {
-                return response()->json([
-                    'message' => 'An account with this phone already exists. Please log in or reset your password.',
-                    'code' => 'PHONE_ALREADY_REGISTERED',
-                ], 409);
+        // Never allow a phone-only match to claim a clinic record.
+        // Lock the record and its one-time code while consuming it.
+        $result = DB::transaction(function () use ($data) {
+            $existing = $this->findUserByPhone($data['phone']);
+            if ($existing) {
+                $existing = User::query()->lockForUpdate()->findOrFail($existing->id);
+                if (! $existing->hasRole('client') || ! empty($existing->password)) {
+                    return ['error' => 'PHONE_ALREADY_REGISTERED', 'message' => 'This phone is already registered. Please log in or contact the clinic.', 'status' => 409];
+                }
+                $entry = DB::table('client_link_codes')->where('user_id', $existing->id)->lockForUpdate()->first();
+                if (! $entry || now()->greaterThan($entry->expires_at) || $entry->failed_attempts >= 5) {
+                    return ['error' => 'LINK_CODE_REQUIRED', 'message' => 'Ask the clinic for a new verification code to link your existing record.', 'status' => 409];
+                }
+                if (! Hash::check((string) ($data['link_code'] ?? ''), $entry->code_hash)) {
+                    DB::table('client_link_codes')->where('user_id', $existing->id)->increment('failed_attempts');
+                    return ['error' => 'INVALID_LINK_CODE', 'message' => 'Invalid verification code. Ask the clinic for a new code if needed.', 'status' => 422];
+                }
+                if (! empty($data['email']) && User::query()->where('email', $data['email'])->where('id', '!=', $existing->id)->exists()) {
+                    return ['error' => 'EMAIL_ALREADY_USED', 'message' => 'This email is already in use.', 'status' => 422];
+                }
+                $existing->name = $data['name'];
+                $existing->phone = $data['phone'];
+                $existing->email = $data['email'] ?? $existing->email;
+                $existing->password = $data['password'];
+                $existing->save();
+                DB::table('client_link_codes')->where('user_id', $existing->id)->delete();
+                return ['user' => $existing];
             }
-
-            /*
-             * Upgrade the admin-created client into a registered account.
-             */
-            $existing->name = $data['name'];
-            $existing->phone = $data['phone'];
-            $existing->email = $data['email'] ?? $existing->email;
-            $existing->password = $data['password'];
-            $existing->save();
-
-            $user = $existing;
-        } else {
-            $user = User::create([
+            if (! empty($data['email']) && User::query()->where('email', $data['email'])->exists()) {
+                return ['error' => 'EMAIL_ALREADY_USED', 'message' => 'This email is already in use.', 'status' => 422];
+            }
+            return ['user' => User::create([
                 'name' => $data['name'],
                 'email' => $data['email'] ?? null,
                 'phone' => $data['phone'],
                 'password' => $data['password'],
-            ]);
+            ])];
+        });
+        if (isset($result['error'])) {
+            return response()->json(['code' => $result['error'], 'message' => $result['message']], $result['status']);
         }
+        $user = $result['user'];
 
         if (! $user->hasRole('client')) {
             $user->assignRole('client');

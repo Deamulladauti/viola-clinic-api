@@ -40,13 +40,14 @@ use App\Http\Controllers\Admin\ExpenseController;
 use App\Http\Controllers\Api\V1\ClientNoteController;
 use App\Http\Controllers\Admin\AdminPackageNoShowProgressController;
 use App\Http\Controllers\Admin\AdminPackagePenaltyVoidController;
+use App\Http\Controllers\Admin\AdminClientLinkCodeController;
 
 
 Route::prefix('v1')->group(function () {
     // ── Public ───────────────────────────────────────────────────────────────────
     Route::get('health', fn () => response()->json(['status' => 'ok']))->name('health');
 
-    Route::post('auth/register', [AuthController::class, 'register']);
+    Route::post('auth/register', [AuthController::class, 'register'])->middleware('throttle:5,1');
     Route::post('auth/login',    [AuthController::class, 'login'])->name('login');
 
     Route::prefix('auth')->group(function () {
@@ -169,6 +170,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/clients/lookup', [AdminClientController::class, 'lookupByPhone']);
         Route::get('/clients/search', [AdminClientController::class, 'search']);
         Route::post('/clients', [AdminClientController::class, 'store']);
+        Route::post('/clients/{client}/link-code', [AdminClientLinkCodeController::class, 'store'])->whereNumber('client')->middleware('throttle:10,1');
 
         Route::get('/clients/{client}/appointments', [AppointmentAdminController::class, 'clientAppointments'])->whereNumber('client');
         Route::post('/clients/{client}/appointments', [AdminClientAppointmentController::class, 'store'])->whereNumber('client');

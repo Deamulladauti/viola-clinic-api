@@ -15,8 +15,9 @@ class RegisterRequest extends FormRequest
     {
         return [
             'name'     => ['required', 'string', 'max:100'],
-            'phone'    => ['required', 'string', 'max:50', 'unique:users,phone'],
-            'email'    => ['nullable', 'email', 'max:255', 'unique:users,email'],
+            'phone'    => ['required', 'string', 'max:50'],
+            'email'    => ['nullable', 'email', 'max:255'],
+            'link_code' => ['nullable', 'digits:8'],
             'password' => ['required', 'string', 'min:8'],
         ];
     }

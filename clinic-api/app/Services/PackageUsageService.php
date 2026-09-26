@@ -145,7 +145,7 @@ class PackageUsageService
             $date = Carbon::parse($occurredOn)->toDateString();
 
             try {
-                $package->assertUsableOn($date);
+                $package->assertUsableOn($date, allowBeforeStart: $source === PackageLog::SOURCE_IMPORTED);
             } catch (\LogicException $exception) {
                 throw ValidationException::withMessages([
                     'package' => $exception->getMessage(),
