@@ -143,18 +143,6 @@ class AdminClientController extends Controller
         }
 
         /*
-         * Require at least one contact method for the current flow.
-         * Task 26 will later relax this for legacy/no-login clients.
-         */
-        if (! $phone && ! $email) {
-            throw ValidationException::withMessages([
-                'contact' => [
-                    'Enter at least a phone number or email address.',
-                ],
-            ]);
-        }
-
-        /*
          * Check email across active and soft-deleted users.
          */
         if ($email) {
@@ -284,15 +272,6 @@ class AdminClientController extends Controller
         $phone = $this->nullableTrimmed($validated['phone'] ?? null);
         $email = $this->nullableTrimmed($validated['email'] ?? null);
         $email = $email ? mb_strtolower($email) : null;
-
-        // Keep the current Task 6 rule aligned with client creation.
-        // This is intentionally isolated so Task 26 can later permit both
-        // fields to be null for legacy/no-login clinic records.
-        if (! $phone && ! $email) {
-            throw ValidationException::withMessages([
-                'contact' => ['Enter at least a phone number or email address.'],
-            ]);
-        }
 
         if ($email) {
             $emailExists = User::withTrashed()
