@@ -41,6 +41,7 @@ use App\Http\Controllers\Api\V1\ClientNoteController;
 use App\Http\Controllers\Admin\AdminPackageNoShowProgressController;
 use App\Http\Controllers\Admin\AdminPackagePenaltyVoidController;
 use App\Http\Controllers\Admin\AdminClientLinkCodeController;
+use App\Http\Controllers\Admin\AdminGiftCardController;
 
 
 Route::prefix('v1')->group(function () {
@@ -116,6 +117,13 @@ Route::prefix('v1')->group(function () {
         Route::post  ('categories',                [ServiceCategoryController::class, 'store']);
         Route::match (['put','patch'], 'categories/{category}', [ServiceCategoryController::class, 'update'])->whereNumber('category');
         Route::delete('categories/{category}',     [ServiceCategoryController::class, 'destroy'])->whereNumber('category');
+
+        // Gift cards: admin issuance and management (redemption is Task 39).
+        Route::get('gift-cards', [AdminGiftCardController::class, 'index']);
+        Route::post('gift-cards', [AdminGiftCardController::class, 'store']);
+        Route::get('gift-cards/{giftCard}', [AdminGiftCardController::class, 'show'])->whereNumber('giftCard');
+        Route::patch('gift-cards/{giftCard}/disable', [AdminGiftCardController::class, 'disable'])->whereNumber('giftCard');
+        Route::patch('gift-cards/{giftCard}/enable', [AdminGiftCardController::class, 'enable'])->whereNumber('giftCard');
 
         // Offers / promotions
         Route::get   ('offers/eligible',            [AdminOfferController::class, 'eligible']);
