@@ -42,6 +42,7 @@ use App\Http\Controllers\Admin\AdminPackageNoShowProgressController;
 use App\Http\Controllers\Admin\AdminPackagePenaltyVoidController;
 use App\Http\Controllers\Admin\AdminClientLinkCodeController;
 use App\Http\Controllers\Admin\AdminGiftCardController;
+use App\Http\Controllers\Admin\AdminGiftCardRedemptionController;
 
 
 Route::prefix('v1')->group(function () {
@@ -124,6 +125,8 @@ Route::prefix('v1')->group(function () {
         Route::get('gift-cards/{giftCard}', [AdminGiftCardController::class, 'show'])->whereNumber('giftCard');
         Route::patch('gift-cards/{giftCard}/disable', [AdminGiftCardController::class, 'disable'])->whereNumber('giftCard');
         Route::patch('gift-cards/{giftCard}/enable', [AdminGiftCardController::class, 'enable'])->whereNumber('giftCard');
+        Route::get('gift-cards/{giftCard}/redemptions', [AdminGiftCardRedemptionController::class, 'history'])->whereNumber('giftCard');
+        Route::post('gift-cards/{giftCard}/redeem', [AdminGiftCardRedemptionController::class, 'redeem'])->whereNumber('giftCard');
 
         // Offers / promotions
         Route::get   ('offers/eligible',            [AdminOfferController::class, 'eligible']);

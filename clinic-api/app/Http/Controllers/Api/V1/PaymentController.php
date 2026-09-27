@@ -7,6 +7,7 @@ use App\Models\Appointment;
 use App\Models\PackagePayment;
 use App\Models\ServicePackage;
 use App\Models\User;
+use App\Services\GiftCardPaymentVoidService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -316,11 +317,7 @@ class PaymentController extends Controller
             ], 422);
         }
 
-        $payment->forceFill([
-            'voided_at' => now(),
-            'voided_by_id' => $request->user()?->id,
-            'void_reason' => $data['reason'],
-        ])->save();
+        $payment = app(GiftCardPaymentVoidService::class)->void($payment, $request->user()->id, $data['reason']);
 
         $payment->loadMissing(['staff', 'admin', 'voidedBy', 'package', 'appointment.service']);
 
@@ -361,11 +358,7 @@ class PaymentController extends Controller
             ], 403);
         }
 
-        $payment->forceFill([
-            'voided_at' => now(),
-            'voided_by_id' => $request->user()?->id,
-            'void_reason' => $data['reason'],
-        ])->save();
+        $payment = app(GiftCardPaymentVoidService::class)->void($payment, $request->user()->id, $data['reason']);
 
         $payment->loadMissing(['staff', 'admin', 'voidedBy', 'package', 'appointment.service']);
 
