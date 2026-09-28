@@ -48,8 +48,14 @@ class StaffAppointmentController extends Controller
         abort_if(!$staff, 403, 'Not a staff member');
 
         $q = Appointment::query()
-            ->with(['service:id,name,slug,duration_minutes', 'client:id,name,email,phone', 'package'])
-            ->where('staff_id', $staff->id);
+            ->with(['service:id,name,slug,duration_minutes', 'client:id,name,email,phone', 'staff:id,name', 'package']);
+
+        // Staff can view the full clinic schedule. `scope=my` narrows it to
+        // appointments assigned to the authenticated staff member.
+        $scope = $request->query('scope', 'all');
+        if ($scope === 'my') {
+            $q->where('staff_id', $staff->id);
+        }
 
         // date filters
         $date = $request->query('date');
@@ -96,6 +102,7 @@ class StaffAppointmentController extends Controller
                 'to'         => $to,
                 'status'     => $request->query('status'),
                 'service_id' => $request->query('service_id'),
+                'scope'      => $scope,
             ],
             'data' => $items,
             'pagination' => [
@@ -364,7 +371,6 @@ class StaffAppointmentController extends Controller
                 'package',
             ])
             ->where('id', $id)
-            ->where('staff_id', $staff->id)
             ->first();
 
         if (!$a) {
@@ -732,6 +738,11 @@ class StaffAppointmentController extends Controller
                 // what this appointment is billed at
                 'price' => (float) ($a->price ?? 0),
             ],
+
+            'staff'    => $a->staff ? [
+                'id'   => $a->staff->id,
+                'name' => $a->staff->name,
+            ] : null,
 
             'client'   => $a->client ? [
                 'id'    => $a->client->id,
