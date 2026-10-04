@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\ServiceCategory;
 use App\Models\Service;
+use App\Services\OfferPricingService;
 
 class PublicCategoryController extends Controller
 {
@@ -130,7 +131,11 @@ class PublicCategoryController extends Controller
         $query = Service::query()
             ->where('service_category_id', $category->id)
             ->where('is_active', true)
-            ->with(['category:id,name,slug', 'tags:id,name,slug'])
+            ->with([
+                'category:id,name,slug',
+                'tags:id,name,slug',
+                'offers' => fn ($q) => $q->currentlyActive(),
+            ])
             ->select([
                 'id',
                 'service_category_id',
@@ -142,6 +147,10 @@ class PublicCategoryController extends Controller
                 'price',
                 'is_active',
                 'is_bookable',
+                'is_package',
+                'total_sessions',
+                'total_minutes',
+                'usage_type',
                 'image_path',
                 'created_at',
             ]);
@@ -228,6 +237,7 @@ class PublicCategoryController extends Controller
                     : $s->name,
                 'slug'              => $s->slug,
                 'price'             => (float) $s->price,
+                'offer'             => $this->bestOffer($s),
                 'duration_minutes'  => (int) $s->duration_minutes,
                 'short_description' => method_exists($s, 'getShortDescriptionLocalizedAttribute')
                     ? $s->short_description_localized
@@ -241,6 +251,11 @@ class PublicCategoryController extends Controller
                 // Not backed by DB anymore → always 0 or remove if unused in FE
                 'views_count'       => 0,
                 'is_bookable'       => (bool) $s->is_bookable,
+                'is_package'        => (bool) $s->is_package,
+                'usage_type'        => $s->usage_type,
+                'included_units'    => $s->usage_type === Service::USAGE_MINUTES
+                    ? $s->total_minutes
+                    : ($s->usage_type === Service::USAGE_SESSION ? $s->total_sessions : 1),
             ];
         });
 
@@ -301,5 +316,36 @@ public function show(int $id)
         ],
     ]);
 }
+
+
+    private function bestOffer(Service $service): ?array
+    {
+        $pricing = app(OfferPricingService::class);
+        $best = null;
+
+        foreach ($service->offers as $offer) {
+            try {
+                $terms = $pricing->calculate($offer, $service);
+            } catch (\Throwable) {
+                continue;
+            }
+
+            if ($best === null || (float) $terms['final_price'] < (float) $best['final_price']) {
+                $best = [
+                    'id' => (int) $offer->id,
+                    'name' => (string) $offer->name,
+                    'description' => $offer->description,
+                    'pricing_type' => (string) $offer->pricing_type,
+                    'regular_price' => (float) $terms['original_price'],
+                    'discount_amount' => (float) $terms['discount_amount'],
+                    'final_price' => (float) $terms['final_price'],
+                    'starts_on' => $offer->starts_on?->toDateString(),
+                    'ends_on' => $offer->ends_on?->toDateString(),
+                ];
+            }
+        }
+
+        return $best;
+    }
 
 }

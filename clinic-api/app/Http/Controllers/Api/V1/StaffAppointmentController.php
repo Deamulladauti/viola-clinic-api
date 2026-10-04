@@ -391,9 +391,10 @@ class StaffAppointmentController extends Controller
         $staff = $request->user()->staff;
         abort_if(!$staff, 403, 'Not a staff member');
 
+        // Staff have clinic-wide operational permissions. They may act on any
+        // appointment visible in the clinic schedule, not only their own.
         $a = Appointment::with(['service','client','staff','package'])
             ->where('id', $id)
-            ->where('staff_id', $staff->id)
             ->first();
 
         if (!$a) {
@@ -424,9 +425,10 @@ class StaffAppointmentController extends Controller
         $staff = $request->user()->staff;
         abort_if(!$staff, 403, 'Not a staff member');
 
+        // Staff have clinic-wide operational permissions. They may act on any
+        // appointment visible in the clinic schedule, not only their own.
         $a = Appointment::with(['service','client','staff','package'])
             ->where('id', $id)
-            ->where('staff_id', $staff->id)
             ->first();
 
         if (!$a) {
@@ -454,9 +456,10 @@ class StaffAppointmentController extends Controller
         $staff = $request->user()->staff;
         abort_if(!$staff, 403, 'Not a staff member');
 
+        // Staff have clinic-wide operational permissions. They may act on any
+        // appointment visible in the clinic schedule, not only their own.
         $a = Appointment::with(['service','client','staff','package'])
             ->where('id', $id)
-            ->where('staff_id', $staff->id)
             ->first();
 
         if (!$a) {
@@ -484,9 +487,10 @@ class StaffAppointmentController extends Controller
         $staff = $request->user()->staff;
         abort_if(!$staff, 403, 'Not a staff member');
 
+        // Staff have clinic-wide operational permissions. They may act on any
+        // appointment visible in the clinic schedule, not only their own.
         $a = Appointment::with(['service','client','staff','package'])
             ->where('id', $id)
-            ->where('staff_id', $staff->id)
             ->first();
 
         if (!$a) {
@@ -514,9 +518,10 @@ class StaffAppointmentController extends Controller
         $staff = $request->user()->staff;
         abort_if(!$staff, 403, 'Not a staff member');
 
+        // Staff have clinic-wide operational permissions. They may act on any
+        // appointment visible in the clinic schedule, not only their own.
         $a = Appointment::with(['service','client','staff','package'])
             ->where('id', $id)
-            ->where('staff_id', $staff->id)
             ->first();
 
         if (!$a) {
@@ -544,9 +549,10 @@ class StaffAppointmentController extends Controller
         $staff = $request->user()->staff;
         abort_if(!$staff, 403, 'Not a staff member');
 
+        // Staff have clinic-wide operational permissions. They may act on any
+        // appointment visible in the clinic schedule, not only their own.
         $a = Appointment::with(['service','client','staff','package'])
             ->where('id', $id)
-            ->where('staff_id', $staff->id)
             ->first();
 
         if (!$a) {

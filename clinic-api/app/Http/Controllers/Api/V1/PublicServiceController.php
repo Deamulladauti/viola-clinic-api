@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use App\Models\Service;
+use App\Services\OfferPricingService;
 use Illuminate\Support\Collection;
 
 class PublicServiceController extends Controller
@@ -36,6 +37,7 @@ class PublicServiceController extends Controller
             ->with([
                 'category:id,name,slug',
                 'tags:id,name,slug',
+                'offers' => fn ($q) => $q->currentlyActive(),
             ])
             ->select([
                 'id',
@@ -182,6 +184,7 @@ class PublicServiceController extends Controller
                 'id'                => $s->id,
                 'slug'              => $s->slug,
                 'price'             => (float) $s->price,
+                'offer'             => $this->bestOffer($s),
                 'duration_minutes'  => (int) $s->duration_minutes,
                 'is_active'         => (bool) $s->is_active,
                 'is_bookable'       => (bool) $s->is_bookable,
@@ -248,7 +251,7 @@ public function show(Request $request, int $id)
         ->filter()
         ->values();
 
-    $with = [];
+    $with = ['offers' => fn ($q) => $q->currentlyActive()];
     if ($include->contains('category')) $with[] = 'category:id,name,slug';
     if ($include->contains('tags'))     $with[] = 'tags:id,name,slug';
     if ($include->contains('staff'))    $with[] = 'staff:id,name,email';
@@ -278,7 +281,7 @@ public function show(Request $request, int $id)
         $include = collect(explode(',', (string) $request->query('include', '')))
             ->map(fn ($s) => trim($s))->filter()->values();
 
-        $with = [];
+        $with = ['offers' => fn ($q) => $q->currentlyActive()];
         if ($include->contains('category')) $with[] = 'category:id,name,slug';
         if ($include->contains('tags'))     $with[] = 'tags:id,name,slug';
         if ($include->contains('staff'))    $with[] = 'staff:id,name,email';
@@ -338,6 +341,7 @@ public function show(Request $request, int $id)
         'id'               => $s->id,
         'slug'             => $s->slug,
         'price'            => (float) $s->price,
+        'offer'            => $this->bestOffer($s),
         'duration_minutes' => (int) $s->duration_minutes,
         'is_active'        => (bool) $s->is_active,
         'is_bookable'      => (bool) $s->is_bookable,
@@ -399,4 +403,43 @@ public function show(Request $request, int $id)
 
     return response()->json($data);
 }
+
+    /**
+     * Return the currently-active offer that gives the client the lowest price.
+     * Public catalog only; booking enforcement remains server-side.
+     */
+    private function bestOffer(Service $service): ?array
+    {
+        $offers = $service->relationLoaded('offers')
+            ? $service->offers
+            : $service->offers()->currentlyActive()->get();
+
+        $pricing = app(OfferPricingService::class);
+        $best = null;
+
+        foreach ($offers as $offer) {
+            try {
+                $terms = $pricing->calculate($offer, $service);
+            } catch (\Throwable) {
+                continue;
+            }
+
+            if ($best === null || (float) $terms['final_price'] < (float) $best['final_price']) {
+                $best = [
+                    'id' => (int) $offer->id,
+                    'name' => (string) $offer->name,
+                    'description' => $offer->description,
+                    'pricing_type' => (string) $offer->pricing_type,
+                    'regular_price' => (float) $terms['original_price'],
+                    'discount_amount' => (float) $terms['discount_amount'],
+                    'final_price' => (float) $terms['final_price'],
+                    'starts_on' => $offer->starts_on?->toDateString(),
+                    'ends_on' => $offer->ends_on?->toDateString(),
+                ];
+            }
+        }
+
+        return $best;
+    }
+
 }

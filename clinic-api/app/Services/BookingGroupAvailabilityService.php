@@ -34,9 +34,9 @@ class BookingGroupAvailabilityService
      *   resource_guard:string
      * }
      */
-    public function availableSlots(array $serviceIds, int $staffId, string $date, int $step = 15): array
+    public function availableSlots(array $serviceIds, int $staffId, string $date, int $step = 15, array $ignoreAppointmentIds = []): array
     {
-        $context = $this->buildContext($serviceIds, $staffId, $date);
+        $context = $this->buildContext($serviceIds, $staffId, $date, $ignoreAppointmentIds);
         $slots = [];
 
         if (!$context['schedule']) {
@@ -85,9 +85,9 @@ class BookingGroupAvailabilityService
      *
      * @param array<int, int> $serviceIds
      */
-    public function validateBlock(array $serviceIds, int $staffId, string $date, string $startsAt): void
+    public function validateBlock(array $serviceIds, int $staffId, string $date, string $startsAt, array $ignoreAppointmentIds = []): void
     {
-        $context = $this->buildContext($serviceIds, $staffId, $date);
+        $context = $this->buildContext($serviceIds, $staffId, $date, $ignoreAppointmentIds);
         $timezone = $context['timezone'];
 
         if (!$context['schedule']) {
@@ -112,7 +112,7 @@ class BookingGroupAvailabilityService
      * @param array<int, int> $serviceIds
      * @return array<string,mixed>
      */
-    private function buildContext(array $serviceIds, int $staffId, string $date): array
+    private function buildContext(array $serviceIds, int $staffId, string $date, array $ignoreAppointmentIds = []): array
     {
         $serviceIds = array_values(array_map('intval', $serviceIds));
         if (count($serviceIds) < 2) {
@@ -181,6 +181,7 @@ class BookingGroupAvailabilityService
 
         $appointments = Appointment::query()
             ->whereDate('date', $date)
+            ->when($ignoreAppointmentIds, fn ($q) => $q->whereNotIn('id', array_map('intval', $ignoreAppointmentIds)))
             ->whereIn('status', [
                 Appointment::STATUS_PENDING,
                 Appointment::STATUS_CONFIRMED,

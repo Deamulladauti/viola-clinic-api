@@ -15,6 +15,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use App\Events\AppointmentBookedEvent;
+use App\Services\OfferPricingService;
 
 class AppointmentPublicController extends Controller
 {
@@ -55,7 +56,10 @@ class AppointmentPublicController extends Controller
         $stepMinutes = (int) config('clinic.slot_step', 15);
         $now = Carbon::now();
         if ($date === $now->toDateString()) {
-            $earliest = (clone $now)->second(0);
+            // Keep availability consistent with booking validation so the app
+            // never offers a slot that is already inside the notice window.
+            $minNotice = (int) config('clinic.min_notice_minutes', 30);
+            $earliest = (clone $now)->addMinutes($minNotice)->second(0);
             $remainder = $earliest->minute % $stepMinutes;
             if ($remainder !== 0) {
                 $earliest->addMinutes($stepMinutes - $remainder);
@@ -177,7 +181,12 @@ class AppointmentPublicController extends Controller
         $requestedPackageId = isset($v['service_package_id']) ? (int) $v['service_package_id'] : null;
 
         $duration = (int) ($service->duration_minutes ?? 60);
-        $price = (float) ($service->price ?? 0);
+
+        // Resolve pricing on the server at booking time. The mobile client never
+        // supplies or controls the sale price. If multiple active offers apply,
+        // use the one with the lowest final price, matching the public catalog.
+        $saleTerms = $this->bestCurrentSaleTerms($service);
+        $price = (float) $saleTerms['final_price'];
 
         $workdayStart = Carbon::createFromFormat('Y-m-d H:i:s', $date.' '.$workdayStartStr);
         $workdayEnd = Carbon::createFromFormat('Y-m-d H:i:s', $date.' '.$workdayEndStr);
@@ -321,6 +330,7 @@ class AppointmentPublicController extends Controller
             $startsAt,
             $duration,
             $price,
+            $saleTerms,
             $v
         ) {
             $package = null;
@@ -350,8 +360,15 @@ class AppointmentPublicController extends Controller
                         'snapshot_duration_minutes' => $service->duration_minutes,
                         'remaining_sessions' => $totalSessions,
                         'remaining_minutes' => null,
-                        'price_total' => $service->price,
+                        'price_total' => $price,
                         'price_paid' => 0,
+                        'sale_original_price' => $saleTerms['original_price'],
+                        'sale_discount_type' => $saleTerms['discount_type'],
+                        'sale_discount_value' => $saleTerms['discount_value'],
+                        'sale_discount_amount' => $saleTerms['discount_amount'],
+                        'sale_final_price' => $saleTerms['final_price'],
+                        'sale_offer_id' => $saleTerms['offer_id'],
+                        'sale_offer_name' => $saleTerms['offer_name'],
                         'currency' => 'EUR',
                         'status' => ServicePackage::STATUS_ACTIVE,
                         'starts_on' => now()->toDateString(),
@@ -400,6 +417,13 @@ class AppointmentPublicController extends Controller
                 'starts_at' => $startsAt,
                 'duration_minutes' => $duration,
                 'price' => $price,
+                'sale_original_price' => $saleTerms['original_price'],
+                'sale_discount_type' => $saleTerms['discount_type'],
+                'sale_discount_value' => $saleTerms['discount_value'],
+                'sale_discount_amount' => $saleTerms['discount_amount'],
+                'sale_final_price' => $saleTerms['final_price'],
+                'sale_offer_id' => $saleTerms['offer_id'],
+                'sale_offer_name' => $saleTerms['offer_name'],
                 'customer_name' => $user->name ?? ($v['customer_name'] ?? null),
                 'customer_email' => $user->email ?? ($v['customer_email'] ?? null),
                 'customer_phone' => $user->phone ?? ($v['customer_phone'] ?? null),
@@ -416,6 +440,50 @@ class AppointmentPublicController extends Controller
             'message' => 'Appointment booked',
             'appointment' => $this->presentAppointment($appt),
         ], 201);
+    }
+
+
+    /**
+     * Resolve the best currently-active offer for a client booking.
+     * Falls back to the service regular price when there is no valid offer.
+     */
+    private function bestCurrentSaleTerms(Service $service): array
+    {
+        $regular = round(max((float) ($service->price ?? 0), 0), 2);
+        $best = [
+            'original_price' => $regular,
+            'discount_type' => null,
+            'discount_value' => null,
+            'discount_amount' => 0.0,
+            'final_price' => $regular,
+            'offer_id' => null,
+            'offer_name' => null,
+        ];
+
+        $pricing = app(OfferPricingService::class);
+        $offers = $service->offers()->currentlyActive()->get();
+
+        foreach ($offers as $offer) {
+            try {
+                $terms = $pricing->resolve($offer, $service);
+            } catch (\Throwable) {
+                continue;
+            }
+
+            if ((float) $terms['final_price'] < (float) $best['final_price']) {
+                $best = [
+                    'original_price' => (float) $terms['original_price'],
+                    'discount_type' => $terms['discount_type'],
+                    'discount_value' => $terms['discount_value'],
+                    'discount_amount' => (float) $terms['discount_amount'],
+                    'final_price' => (float) $terms['final_price'],
+                    'offer_id' => (int) $offer->id,
+                    'offer_name' => (string) $offer->name,
+                ];
+            }
+        }
+
+        return $best;
     }
 
     private function assertPackageCanBeBooked(

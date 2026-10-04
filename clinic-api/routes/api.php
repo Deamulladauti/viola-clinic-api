@@ -9,7 +9,9 @@ use App\Http\Controllers\Api\V1\PublicCategoryController;
 use App\Http\Controllers\Api\V1\ServiceSignalsController;
 use App\Http\Controllers\Admin\AppointmentAdminController;
 use App\Http\Controllers\Admin\AdminInsightsController;
+use App\Http\Controllers\Admin\AdminFinancialReportController;
 use App\Http\Controllers\Public\AppointmentPublicController;
+use App\Http\Controllers\Client\ClientBookingGroupController;
 use App\Http\Controllers\Admin\StaffAdminController;
 use App\Http\Controllers\Api\V1\MeController;
 use App\Http\Controllers\Api\V1\MeAppointmentActionsController;
@@ -161,6 +163,7 @@ Route::prefix('v1')->group(function () {
         Route::get('appointments/{appointment}/sale-price-corrections', [AdminSalePriceCorrectionController::class, 'appointmentHistory'])->whereNumber('appointment');
 
         Route::get('insights', [AdminInsightsController::class, 'index']);
+        Route::get('financial-reports', [AdminFinancialReportController::class, 'index']);
 
         Route::get('/clients/{client}/payments', [PaymentController::class, 'listForClient'])
             ->whereNumber('client');
@@ -284,6 +287,10 @@ Route::prefix('v1')->group(function () {
         Route::get   ('me/packages',                      [MePackageController::class, 'index']);
         Route::get   ('me/packages/{package}',            [MePackageController::class, 'show'])->whereNumber('package');
 
+        Route::get('me/booking-groups/staff', [ClientBookingGroupController::class, 'staff']);
+        Route::get('me/booking-groups/availability', [ClientBookingGroupController::class, 'availability']);
+        Route::post('me/booking-groups', [ClientBookingGroupController::class, 'store'])->middleware('throttle:6,1');
+
         // Notification routes are shared above (auth:sanctum for every role).
     });
 
@@ -337,9 +344,6 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
 
     Route::patch('payments/{payment}/void', [PaymentController::class, 'voidByStaff'])
     ->whereNumber('payment');
-
-
-
 
 });
 });

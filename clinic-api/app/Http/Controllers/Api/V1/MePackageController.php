@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ServicePackage;
 use App\Models\PackageLog;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class MePackageController extends Controller
 {
@@ -51,6 +52,10 @@ class MePackageController extends Controller
             'amount_paid'       => (float) $p->amount_paid,
             'remaining_payment' => (float) $p->remaining_to_pay,
             'currency'          => $p->currency,
+            'sale_original_price' => $p->sale_original_price !== null ? (float) $p->sale_original_price : null,
+            'sale_final_price' => $p->sale_final_price !== null ? (float) $p->sale_final_price : (float) ($p->price_total ?? 0),
+            'sale_discount_amount' => $p->sale_discount_amount !== null ? (float) $p->sale_discount_amount : null,
+            'sale_offer_name' => $p->sale_offer_name,
 
             'usage_type' => $p->usageType(),
             'total_units' => $p->totalUnits(),
@@ -86,7 +91,15 @@ class MePackageController extends Controller
 
         $package->load(['service:id,name,slug', 'logs' => function ($q) {
             $q->orderByDesc('occurred_on')->orderByDesc('id')->limit(20);
+        }, 'payments' => function ($q) {
+            $q->latest('id')->limit(20);
         }]);
+
+        $giftCardPaymentIds = DB::table('gift_card_redemptions')
+            ->whereIn('package_payment_id', $package->payments->pluck('id'))
+            ->pluck('package_payment_id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
 
         return response()->json([
             'data' => [
@@ -104,6 +117,10 @@ class MePackageController extends Controller
                 'amount_paid'       => (float) $package->amount_paid,
                 'remaining_payment' => (float) $package->remaining_to_pay,
                 'currency'          => $package->currency,
+                'sale_original_price' => $package->sale_original_price !== null ? (float) $package->sale_original_price : null,
+                'sale_final_price' => $package->sale_final_price !== null ? (float) $package->sale_final_price : (float) ($package->price_total ?? 0),
+                'sale_discount_amount' => $package->sale_discount_amount !== null ? (float) $package->sale_discount_amount : null,
+                'sale_offer_name' => $package->sale_offer_name,
 
                 'usage_type' => $package->usageType(),
                 'total_units' => $package->totalUnits(),
@@ -120,6 +137,14 @@ class MePackageController extends Controller
                     'minutes' => $package->snapshot_total_minutes,
                     'duration_minutes' => $package->snapshot_duration_minutes,
                 ],
+                'payments' => $package->payments->map(fn ($payment) => [
+                    'id' => $payment->id,
+                    'amount' => (float) $payment->amount,
+                    'currency' => $payment->currency,
+                    'method' => in_array((int) $payment->id, $giftCardPaymentIds, true) ? 'gift_card' : $payment->method,
+                    'created_at' => optional($payment->created_at)?->toIso8601String(),
+                    'voided_at' => optional($payment->voided_at)?->toIso8601String(),
+                ]),
                 'logs' => $package->logs->map(fn (PackageLog $log) => [
                     'id' => $log->id,
                     'usage_type' => $log->usage_type,

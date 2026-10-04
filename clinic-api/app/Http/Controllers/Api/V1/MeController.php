@@ -3,6 +3,9 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Models\Appointment;
+use App\Models\PackageLog;
+use App\Models\Service;
+use App\Models\ServicePackage;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -141,34 +144,35 @@ class MeController extends Controller
     public function appointments(Request $request)
     {
         $user = $request->user();
-
-        // Normalize email for safe comparison
         $email = strtolower(trim((string) $user->email));
 
-        $status   = $request->query('status');      // optional
-        $upcoming = $request->query('upcoming');    // "1" or "0" or null
+        $status   = $request->query('status');
+        $upcoming = $request->query('upcoming');
 
-        $q = Appointment::with(['service','staff'])
-            ->whereRaw('LOWER(customer_email) = ?', [$email]);
+        $q = Appointment::with(['service', 'staff', 'bookingGroup'])
+            ->where(function ($query) use ($user, $email) {
+                // Current bookings should be linked by user_id. Keep the email
+                // fallback for older bookings created before account linking.
+                $query->where('user_id', $user->id);
+                if ($email !== '') {
+                    $query->orWhereRaw('LOWER(customer_email) = ?', [$email]);
+                }
+            });
 
         if ($status) {
             $q->where('status', $status);
         }
 
-        // Upcoming / past filter
         if (!is_null($upcoming)) {
-            $now = Carbon::now();
-
+            $now = Carbon::now(config('clinic.timezone', config('app.timezone')));
             $q->where(function ($qq) use ($upcoming, $now) {
                 if (filter_var($upcoming, FILTER_VALIDATE_BOOLEAN)) {
-                    // upcoming: (date > today) OR (date == today AND starts_at >= now time)
                     $qq->whereDate('date', '>', $now->toDateString())
                        ->orWhere(function ($q2) use ($now) {
                            $q2->whereDate('date', $now->toDateString())
                               ->where('starts_at', '>=', $now->format('H:i:s'));
                        });
                 } else {
-                    // past: (date < today) OR (date == today AND starts_at < now time)
                     $qq->whereDate('date', '<', $now->toDateString())
                        ->orWhere(function ($q2) use ($now) {
                            $q2->whereDate('date', $now->toDateString())
@@ -178,60 +182,144 @@ class MeController extends Controller
             });
         }
 
-        $appointments = $q->orderByDesc('date')
-            ->orderByDesc('starts_at')
-            ->get()
-            ->map(function (Appointment $a) {
-                // Normalize date
-                $date = $a->date instanceof Carbon
-                    ? $a->date->toDateString()
-                    : Carbon::parse($a->date)->toDateString();
+        $appointments = $q->orderByDesc('date')->orderByDesc('starts_at')->get();
+        $packageProgress = $this->buildClientPackageSessionProgress($appointments);
 
-                // Normalize starts_at to HH:MM:SS safely
-                $startsAt = $a->starts_at;
-                if ($startsAt) {
-                    // "14:35" → "14:35:00"
-                    if (strlen($startsAt) === 5) {
-                        $startsAt .= ':00';
-                    }
-                } else {
-                    // Fallback if somehow null
-                    $startsAt = '00:00:00';
+        $payload = $appointments->map(function (Appointment $a) use ($packageProgress) {
+            $date = $a->date instanceof Carbon
+                ? $a->date->toDateString()
+                : Carbon::parse($a->date)->toDateString();
+
+            $startsAt = $a->starts_at ?: '00:00:00';
+            if (strlen($startsAt) === 5) {
+                $startsAt .= ':00';
+            }
+
+            $start = Carbon::parse("{$date} {$startsAt}");
+            $durationMinutes = (int) ($a->duration_minutes ?? 0);
+            $end = (clone $start)->addMinutes($durationMinutes);
+            $finalPrice = (float) ($a->sale_final_price ?? $a->price ?? 0);
+            $originalPrice = (float) ($a->sale_original_price ?? $finalPrice);
+
+            return [
+                'id' => $a->id,
+                'reference' => $a->reference_code,
+                'booking_group_id' => $a->booking_group_id ? (int) $a->booking_group_id : null,
+                'service' => [
+                    'id' => $a->service?->id,
+                    'name' => $a->service?->name,
+                    'slug' => $a->service?->slug,
+                ],
+                'staff' => $a->staff ? [
+                    'id' => $a->staff->id,
+                    'name' => $a->staff->name,
+                ] : null,
+                'date' => $date,
+                'time' => $a->starts_at,
+                'end_time' => $end->format('H:i:s'),
+                'duration_minutes' => $durationMinutes,
+                'price' => $finalPrice,
+                'pricing' => [
+                    'original_price' => $originalPrice,
+                    'final_price' => $finalPrice,
+                    'discount_amount' => (float) ($a->sale_discount_amount ?? 0),
+                    'offer_name' => $a->sale_offer_name,
+                    'has_discount' => $originalPrice > $finalPrice,
+                ],
+                'package' => $packageProgress[(int) $a->id] ?? null,
+                'status' => $a->status,
+                'notes' => $a->notes,
+                'display' => [
+                    'date_time' => $start->format('Y-m-d H:i'),
+                    'range' => $start->format('H:i') . '–' . $end->format('H:i'),
+                ],
+            ];
+        });
+
+        return response()->json(['appointments' => $payload]);
+    }
+
+    /**
+     * Client-facing package session progress. Mirrors the Admin calendar rule:
+     * completed visits use the package ledger; future active bookings are numbered
+     * after consumed sessions in chronological order across the whole package.
+     */
+    private function buildClientPackageSessionProgress($appointments): array
+    {
+        $packageIds = $appointments->pluck('service_package_id')->filter()->map(fn ($id) => (int) $id)->unique()->values();
+        if ($packageIds->isEmpty()) {
+            return [];
+        }
+
+        $packages = ServicePackage::query()->whereIn('id', $packageIds)->get([
+            'id', 'snapshot_total_sessions', 'remaining_sessions', 'snapshot_usage_type',
+        ])->keyBy('id');
+
+        $logs = PackageLog::query()
+            ->whereIn('service_package_id', $packageIds)
+            ->whereNull('voided_at')
+            ->where(function ($query) {
+                $query->where('usage_type', Service::USAGE_SESSION)->orWhere('used_sessions', '>', 0);
+            })
+            ->orderBy('service_package_id')->orderBy('occurred_on')->orderBy('used_at')->orderBy('id')
+            ->get(['id', 'service_package_id', 'appointment_id', 'session_number']);
+
+        $logsByPackage = $logs->groupBy('service_package_id');
+        $completed = [];
+        $usedCounts = [];
+        foreach ($packageIds as $packageId) {
+            $packageLogs = $logsByPackage->get($packageId, collect())->values();
+            $usedCounts[$packageId] = $packageLogs->count();
+            foreach ($packageLogs as $index => $log) {
+                if ($log->appointment_id) {
+                    $completed[(int) $log->appointment_id] = (int) ($log->session_number ?: ($index + 1));
                 }
+            }
+        }
 
-                // Safe parsing (this was causing your error before)
-                $start = Carbon::parse("{$date} {$startsAt}");
+        $today = Carbon::today(config('clinic.timezone', config('app.timezone')))->toDateString();
+        $future = Appointment::query()
+            ->whereIn('service_package_id', $packageIds)
+            ->whereIn('status', [Appointment::STATUS_PENDING, Appointment::STATUS_CONFIRMED])
+            ->whereDate('date', '>=', $today)
+            ->orderBy('service_package_id')->orderBy('date')->orderBy('starts_at')->orderBy('id')
+            ->get(['id', 'service_package_id']);
 
-                $durationMinutes = (int) ($a->duration_minutes ?? 0);
-                $end = (clone $start)->addMinutes($durationMinutes);
+        $futureNumbers = [];
+        foreach ($future->groupBy('service_package_id') as $packageId => $items) {
+            $used = (int) ($usedCounts[(int) $packageId] ?? 0);
+            foreach ($items->values() as $index => $appointment) {
+                $futureNumbers[(int) $appointment->id] = $used + $index + 1;
+            }
+        }
 
-                return [
-                    'id'         => $a->id,
-                    'reference'  => $a->reference_code,
-                    'service'    => [
-                        'id'   => $a->service?->id,
-                        'name' => $a->service?->name,
-                        'slug' => $a->service?->slug,
-                    ],
-                    'staff'      => $a->staff ? [
-                        'id'   => $a->staff->id,
-                        'name' => $a->staff->name,
-                    ] : null,
-                    'date'       => $date,
-                    'time'       => $a->starts_at,               // original string
-                    'end_time'   => $end->format('H:i:s'),
-                    'duration_minutes' => $durationMinutes,
-                    'price'      => (float) ($a->price ?? 0),
-                    'status'     => $a->status,
-                    'notes'      => $a->notes,
-                    'display'    => [
-                        'date_time' => $start->format('Y-m-d H:i'),
-                        'range'     => $start->format('H:i') . '–' . $end->format('H:i'),
-                    ],
-                ];
-            });
+        $result = [];
+        foreach ($appointments as $appointment) {
+            if (!$appointment->service_package_id) continue;
+            $packageId = (int) $appointment->service_package_id;
+            $package = $packages->get($packageId);
+            if (!$package) continue;
 
-        return response()->json(['appointments' => $appointments]);
+            $used = (int) ($usedCounts[$packageId] ?? 0);
+            $total = $package->snapshot_total_sessions !== null
+                ? (int) $package->snapshot_total_sessions
+                : ($package->remaining_sessions !== null ? $used + (int) $package->remaining_sessions : null);
+            if (!$total) continue;
+
+            $number = $appointment->status === Appointment::STATUS_COMPLETED
+                ? ($completed[(int) $appointment->id] ?? null)
+                : ($futureNumbers[(int) $appointment->id] ?? null);
+            if (!$number) continue;
+
+            $result[(int) $appointment->id] = [
+                'package_id' => $packageId,
+                'session_number' => (int) $number,
+                'total_sessions' => (int) $total,
+                'remaining_sessions' => $package->remaining_sessions !== null ? (int) $package->remaining_sessions : null,
+            ];
+        }
+
+        return $result;
     }
 
     public function deleteAccount(Request $request)
