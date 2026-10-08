@@ -296,6 +296,17 @@ Route::prefix('v1')->group(function () {
 
 
 Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(function () {
+
+    // Staff booking: shared booking engine with restricted staff request validation.
+    Route::get('booking/services', [ServiceController::class, 'index']);
+    Route::get('booking/offers/eligible', [AdminOfferController::class, 'eligible']);
+    Route::get('booking/clients/{client}', [\App\Http\Controllers\Api\V1\StaffBookingClientController::class, 'show'])->whereNumber('client');
+    Route::post('booking/clients', [\App\Http\Controllers\Api\V1\StaffBookingClientController::class, 'store']);
+    Route::get('booking/booking-groups/staff', [AdminBookingGroupStaffController::class, 'index']);
+    Route::get('booking/booking-groups/availability', [AdminBookingGroupAvailabilityController::class, 'index']);
+    Route::post('booking/clients/{client}/appointments', [\App\Http\Controllers\Api\V1\StaffClientBookingAppointmentController::class, 'store'])->whereNumber('client');
+    Route::post('booking/clients/{client}/booking-groups', [\App\Http\Controllers\Api\V1\StaffClientBookingGroupController::class, 'store'])->whereNumber('client');
+
     // Appointments list / agenda / today
     Route::get  ('appointments',                    [StaffAppointmentController::class, 'index']);
     Route::get  ('appointments/agenda',             [StaffAppointmentController::class, 'agenda']);
