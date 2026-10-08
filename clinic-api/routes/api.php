@@ -336,10 +336,8 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
 
     // Staff-side packages utilities
     Route::get  ('packages',                          [StaffPackageController::class, 'index']);
+    // Package attachment and detachment are admin-only.
 
-    // Attach/detach package to an appointment
-    Route::patch('appointments/{appointment}/attach-package', [StaffPackageController::class, 'attachToAppointment'])->whereNumber('appointment');
-    Route::patch('appointments/{appointment}/detach-package', [StaffPackageController::class, 'detachFromAppointment'])->whereNumber('appointment');
 
     // Manual quantity usage (minutes only)
     Route::post ('packages/{package}/usage',          [PackageQuantityUsageController::class, 'storeStaff'])->whereNumber('package');

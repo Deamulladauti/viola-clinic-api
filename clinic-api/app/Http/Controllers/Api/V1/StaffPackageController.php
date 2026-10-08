@@ -100,6 +100,7 @@ class StaffPackageController extends Controller
      */
     public function attachToAppointment(Request $request, int $id)
     {
+        abort(403, "Only administrators can attach or detach packages from existing appointments.");
         $staff = $request->user()->staff;
         abort_if(! $staff, 403, 'Not a staff member');
 
@@ -188,6 +189,7 @@ class StaffPackageController extends Controller
 
     public function detachFromAppointment(Request $request, int $id)
     {
+        abort(403, "Only administrators can attach or detach packages from existing appointments.");
         $staff = $request->user()->staff;
         abort_if(!$staff, 403, 'Not a staff member');
 
