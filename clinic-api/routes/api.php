@@ -291,6 +291,8 @@ Route::prefix('v1')->group(function () {
         Route::get('me/booking-groups/availability', [ClientBookingGroupController::class, 'availability']);
         Route::post('me/booking-groups', [ClientBookingGroupController::class, 'store'])->middleware('throttle:6,1');
 
+        
+
         // Notification routes are shared above (auth:sanctum for every role).
     });
 
@@ -353,6 +355,12 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
 
     Route::patch('payments/{payment}/void', [PaymentController::class, 'voidByStaff'])
     ->whereNumber('payment');
+
+    Route::get('clients/{client}/notes', [ClientNoteController::class, 'index'])
+    ->whereNumber('client');
+
+    Route::post('clients/{client}/notes', [ClientNoteController::class, 'store'])
+        ->whereNumber('client');
 
 });
 });
