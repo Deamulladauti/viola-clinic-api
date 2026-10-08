@@ -187,7 +187,7 @@ class PackageUsageService
                 'session_number' => null,
                 'used_sessions' => 0,
                 'used_minutes' => $quantity,
-                'used_at' => Carbon::parse($date)->startOfDay(),
+                'used_at' => $date === now()->toDateString() ? now() : Carbon::parse($date)->startOfDay(),
                 'occurred_on' => $date,
                 'source' => $source,
                 'created_by_id' => $actorUserId,

@@ -25,6 +25,9 @@ class StaffServiceController extends Controller
                     'id'            => $s->id,
                     'name'          => $s->name,
                     'price'         => $s->price,
+                    'is_package'    => (bool) $s->is_package,
+                    'usage_type'    => $s->usage_type,
+                    'total_minutes' => $s->total_minutes,
                     'category_id'   => $s->service_category_id,
                     'category_name' => optional($s->category)->name,
                 ];
