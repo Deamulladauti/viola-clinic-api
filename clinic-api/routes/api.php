@@ -359,6 +359,8 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
     Route::get('clients/{client}/notes', [ClientNoteController::class, 'index'])
     ->whereNumber('client');
 
+    Route::patch('me/language', [StaffProfileController::class, 'updateLanguage']);
+    
     Route::post('clients/{client}/notes', [ClientNoteController::class, 'store'])
         ->whereNumber('client');
 
