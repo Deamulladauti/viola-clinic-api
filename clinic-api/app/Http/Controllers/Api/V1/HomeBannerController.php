@@ -26,17 +26,15 @@ class HomeBannerController extends Controller
         $request->validate([
             'media' => [
                 'required',
-                File::types(['jpg', 'jpeg', 'png', 'webp', 'mp4'])
-                    ->max('30mb'),
+                File::types(['jpg', 'jpeg', 'png', 'webp', 'mp4', 'mov'])->max('100mb')
             ],
         ]);
 
         $file = $request->file('media');
 
-        $mediaType = $file->getMimeType() === 'video/mp4'
-            ? 'video'
-            : 'image';
-
+      $mediaType = str_starts_with($file->getMimeType(), 'video/')
+        ? 'video'
+        : 'image';
         // Store the new file before replacing the old banner.
         $newPath = $file->store('home-banners', 'public');
 
