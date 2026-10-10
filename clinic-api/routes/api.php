@@ -45,6 +45,7 @@ use App\Http\Controllers\Admin\AdminPackagePenaltyVoidController;
 use App\Http\Controllers\Admin\AdminClientLinkCodeController;
 use App\Http\Controllers\Admin\AdminGiftCardController;
 use App\Http\Controllers\Admin\AdminGiftCardRedemptionController;
+use App\Http\Controllers\Api\V1\HomeBannerController;
 
 
 Route::prefix('v1')->group(function () {
@@ -57,12 +58,15 @@ Route::prefix('v1')->group(function () {
     Route::prefix('auth')->group(function () {
     Route::post('forgot-password', [PasswordResetController::class, 'forgot']);
     Route::post('reset-password', [PasswordResetController::class, 'reset']);
+    
 });
 
     // Service public info (IDs only)
     Route::get('services',                   [PublicServiceController::class, 'index']);
     Route::get('services/suggest',           [PublicServiceController::class, 'suggest']);
     Route::get('services/{id}',              [PublicServiceController::class, 'show'])->whereNumber('id');
+
+    Route::get('/home-banner', [HomeBannerController::class, 'show']);
 
     // Categories public info (IDs only)
     Route::get('categories',                 [PublicCategoryController::class, 'index']);
@@ -114,6 +118,9 @@ Route::prefix('v1')->group(function () {
         // No-show penalty policy (Task 22)
         Route::get('settings/no-show-policy', [AdminNoShowPolicyController::class, 'show']);
         Route::patch('settings/no-show-policy', [AdminNoShowPolicyController::class, 'update']);
+
+        Route::post('/home-banner', [HomeBannerController::class, 'update']);
+        Route::delete('/home-banner', [HomeBannerController::class, 'destroy']);
 
         // Categories
         Route::get   ('categories',                [ServiceCategoryController::class, 'index']);
@@ -360,7 +367,7 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
     ->whereNumber('client');
 
     Route::patch('me/language', [StaffProfileController::class, 'updateLanguage']);
-    
+
     Route::post('clients/{client}/notes', [ClientNoteController::class, 'store'])
         ->whereNumber('client');
 
