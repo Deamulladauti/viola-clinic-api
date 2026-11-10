@@ -1,0 +1,23 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration {
+    public function up(): void
+    {
+        Schema::table('service_packages', function (Blueprint $table) {
+            $table->date('sold_on')->nullable();
+        });
+        Schema::table('package_payments', function (Blueprint $table) {
+            $table->date('paid_on')->nullable();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('package_payments', fn (Blueprint $table) => $table->dropColumn('paid_on'));
+        Schema::table('service_packages', fn (Blueprint $table) => $table->dropColumn('sold_on'));
+    }
+};

@@ -90,6 +90,7 @@ class AdminPackageController extends Controller
             'remaining_sessions' => $isSessionsType ? $includedUnits : null,
             'remaining_minutes' => $isMinutesType ? $includedUnits : null,
             'status' => ServicePackage::STATUS_ACTIVE,
+            'sold_on' => $request->date('sold_on') ?? now(),
             'starts_on' => $request->date('starts_on'),
             // Package expiry is no longer part of the clinic product rules.
             'expires_on' => null,
@@ -157,6 +158,7 @@ class AdminPackageController extends Controller
                     'exchange_rate' => $normalizedInitialPayment['exchange_rate'],
                     'amount_mkd' => $normalizedInitialPayment['amount_mkd'],
                     'notes' => $initialPayment['note'] ?? null,
+                    'paid_on' => $initialPayment['paid_on'] ?? now()->toDateString(),
                 ]);
             }
 
@@ -192,6 +194,7 @@ class AdminPackageController extends Controller
                 'currency' => $pkg->currency,
                 'remaining_sessions' => $pkg->remaining_sessions,
                 'remaining_minutes' => $pkg->remaining_minutes,
+                'sold_on' => optional($pkg->sold_on ?? $pkg->created_at)?->toDateString(),
                 'starts_on' => optional($pkg->starts_on)?->toDateString(),
                 'expires_on' => optional($pkg->expires_on)?->toDateString(),
                 'initial_payment' => $payment ? [
@@ -203,6 +206,7 @@ class AdminPackageController extends Controller
                     'amount_mkd' => $payment->amount_mkd !== null ? (float) $payment->amount_mkd : null,
                     'notes' => $payment->notes,
                     'created_at' => optional($payment->created_at)?->toDateTimeString(),
+                    'paid_on' => optional($payment->paid_on ?? $payment->created_at)?->toDateString(),
                 ] : null,
             ],
         ], 201);
@@ -267,6 +271,7 @@ class AdminPackageController extends Controller
                     'amount_paid_mkd'          => (float) ($p->amount_paid_mkd ?? 0),
                     'remaining_balance_mkd'    => (float) ($p->remaining_to_pay_mkd ?? 0),
                     'currency'                 => $p->currency,
+                    'sold_on'                  => optional($p->sold_on ?? $p->created_at)?->toDateString(),
                     'starts_on'                => optional($p->starts_on)?->toDateString(),
                     'expires_on'               => optional($p->expires_on)?->toDateString(),
                 ];
@@ -299,6 +304,7 @@ class AdminPackageController extends Controller
                 Rule::in(['EUR', 'MKD']),
             ],
             'note'           => ['nullable', 'string', 'max:1000'],
+            'paid_on' => ['nullable', 'date_format:Y-m-d'],
             'appointment_id' => ['nullable', 'integer', 'exists:appointments,id'],
         ]);
 
@@ -337,6 +343,7 @@ class AdminPackageController extends Controller
                 'exchange_rate'      => $normalized['exchange_rate'],
                 'amount_mkd'         => $normalized['amount_mkd'],
                 'notes'              => $data['note'] ?? null,
+                'paid_on' => $data['paid_on'] ?? now()->toDateString(),
             ]);
         });
 
@@ -354,6 +361,7 @@ class AdminPackageController extends Controller
                 'amount_mkd'     => $payment->amount_mkd !== null ? (float) $payment->amount_mkd : null,
                 'notes'          => $payment->notes,
                 'created_at'     => optional($payment->created_at)?->toDateTimeString(),
+                'paid_on' => optional($payment->paid_on ?? $payment->created_at)?->toDateString(),
             ],
             'package_id'             => $package->id,
             'price_total'            => (float) ($package->price_total ?? 0),

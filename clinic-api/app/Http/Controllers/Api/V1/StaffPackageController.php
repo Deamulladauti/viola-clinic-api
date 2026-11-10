@@ -67,10 +67,24 @@ class StaffPackageController extends Controller
             'status',
         ]);
 
+        // One grouped lookup for the most recent non-voided usage per package.
+        // Keep this summary read-only: no session/minute balances are altered.
+        $latestUsage = PackageLog::query()
+            ->whereIn('service_package_id', $packages->pluck('id'))
+            ->whereNull('voided_at')
+            ->where(function ($query) {
+                $query->where('used_sessions', '>', 0)
+                    ->orWhere('used_minutes', '>', 0);
+            })
+            ->selectRaw('service_package_id, MAX(COALESCE(occurred_on, DATE(used_at))) AS last_usage_date')
+            ->groupBy('service_package_id')
+            ->pluck('last_usage_date', 'service_package_id');
+
         return response()->json([
-            'data' => $packages->map(function (ServicePackage $p) {
+            'data' => $packages->map(function (ServicePackage $p) use ($latestUsage) {
                 return [
                     'id'                    => $p->id,
+                    'last_usage_date'       => $latestUsage[$p->id] ?? null,
                     'service_id'            => $p->service_id,
                     'service_name'          => $p->service_name,
                     'remaining_sessions'    => $p->remaining_sessions,
@@ -461,14 +475,26 @@ class StaffPackageController extends Controller
             'created_at',
         ]);
 
+        $latestUsage = PackageLog::query()
+            ->whereIn('service_package_id', $packages->pluck('id'))
+            ->whereNull('voided_at')
+            ->where(function ($query) {
+                $query->where('used_sessions', '>', 0)
+                    ->orWhere('used_minutes', '>', 0);
+            })
+            ->selectRaw('service_package_id, MAX(COALESCE(occurred_on, DATE(used_at))) AS last_usage_date')
+            ->groupBy('service_package_id')
+            ->pluck('last_usage_date', 'service_package_id');
+
         return response()->json([
-            'data' => $packages->map(function (ServicePackage $p) {
+            'data' => $packages->map(function (ServicePackage $p) use ($latestUsage) {
                 return [
                     'id'                      => $p->id,
                     'user_id'                 => $p->user_id,
                     'service_id'              => $p->service_id,
                     'service_name'            => $p->service_name,
                     'snapshot_total_sessions' => $p->snapshot_total_sessions,
+                    'last_usage_date'        => $latestUsage[$p->id] ?? null,
                     'snapshot_total_minutes'  => $p->snapshot_total_minutes,
                     'usage_type'                => $p->snapshot_usage_type,
                     'minimum_interval_days'      => $p->snapshot_minimum_interval_days,

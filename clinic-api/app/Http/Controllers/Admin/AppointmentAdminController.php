@@ -103,8 +103,23 @@ class AppointmentAdminController extends Controller
             'service_id' => ['nullable', 'integer'],
         ]);
 
+        // Staff see the clinic-wide calendar, but never past appointments.
+        // The named Staff route is protected by role:staff in routes/api.php.
+        $staffCalendar = $request->routeIs('staff.appointments.calendar');
+        if ($staffCalendar) {
+            abort_unless($request->user()?->staff, 403, 'Not a staff member');
+        }
+
         $from = Carbon::createFromFormat('Y-m-d', $data['from'])->startOfDay();
         $to   = Carbon::createFromFormat('Y-m-d', $data['to'])->endOfDay();
+        $now = Carbon::now('Europe/Skopje');
+
+        if ($staffCalendar && $to->lt($now)) {
+            return response()->json(['from' => $data['from'], 'to' => $data['to'], 'items' => []]);
+        }
+        if ($staffCalendar && $from->lt($now->copy()->startOfDay())) {
+            $from = $now->copy()->startOfDay();
+        }
 
         $q = Appointment::query()
             ->with([
@@ -125,6 +140,18 @@ class AppointmentAdminController extends Controller
             // whereDate keeps the calendar range portable across both databases.
             ->whereDate('date', '>=', $from->toDateString())
             ->whereDate('date', '<=', $to->toDateString());
+
+        if ($staffCalendar) {
+            // Compare the clinic-local appointment date/time; past appointments
+            // today must not leak via manually supplied API parameters.
+            $q->where(function ($future) use ($now) {
+                $future->whereDate('date', '>', $now->toDateString())
+                    ->orWhere(function ($today) use ($now) {
+                        $today->whereDate('date', $now->toDateString())
+                            ->where('starts_at', '>=', $now->format('H:i:s'));
+                    });
+            });
+        }
 
         // status filter: supports CSV or array
         if (!empty($data['status'])) {

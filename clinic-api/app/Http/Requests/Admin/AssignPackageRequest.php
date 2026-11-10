@@ -32,6 +32,7 @@ class AssignPackageRequest extends FormRequest
 
             // optional package start date (packages do not expire)
             'starts_on'   => ['nullable','date'],
+            'sold_on' => ['nullable', 'date_format:Y-m-d'],
 
             // optional note
             'notes'       => ['nullable','string','max:2000'],
@@ -52,6 +53,7 @@ class AssignPackageRequest extends FormRequest
                 Rule::in(['EUR', 'MKD']),
             ],
             'initial_payment.note' => ['nullable', 'string', 'max:1000'],
+            'initial_payment.paid_on' => ['nullable', 'date_format:Y-m-d'],
         ];
     }
 

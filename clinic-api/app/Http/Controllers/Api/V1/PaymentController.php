@@ -53,11 +53,11 @@ class PaymentController extends Controller
         }
 
         if (!empty($data['from'])) {
-            $query->whereDate('created_at', '>=', $data['from']);
+            $query->whereDate(DB::raw('COALESCE(paid_on, DATE(created_at))'), '>=', $data['from']);
         }
 
         if (!empty($data['to'])) {
-            $query->whereDate('created_at', '<=', $data['to']);
+            $query->whereDate(DB::raw('COALESCE(paid_on, DATE(created_at))'), '<=', $data['to']);
         }
 
         $payments = $query
@@ -110,11 +110,11 @@ class PaymentController extends Controller
         }
 
         if (!empty($data['from'])) {
-            $query->whereDate('created_at', '>=', $data['from']);
+            $query->whereDate(DB::raw('COALESCE(paid_on, DATE(created_at))'), '>=', $data['from']);
         }
 
         if (!empty($data['to'])) {
-            $query->whereDate('created_at', '<=', $data['to']);
+            $query->whereDate(DB::raw('COALESCE(paid_on, DATE(created_at))'), '<=', $data['to']);
         }
 
         $payments = $query
@@ -155,6 +155,7 @@ class PaymentController extends Controller
             'exchange_rate'      => $normalized['exchange_rate'],
             'amount_mkd'         => $normalized['amount_mkd'],
             'notes'              => $note,
+            'paid_on' => $data['paid_on'] ?? now()->toDateString(),
         ]);
 
         $payment->loadMissing(['staff', 'admin', 'voidedBy', 'package', 'appointment.service']);
@@ -216,6 +217,7 @@ class PaymentController extends Controller
             'exchange_rate'      => $normalized['exchange_rate'],
             'amount_mkd'         => $normalized['amount_mkd'],
             'notes'              => $note,
+            'paid_on' => $data['paid_on'] ?? now()->toDateString(),
         ]);
 
         $appointment->loadMissing('service', 'staff', 'user');
@@ -280,6 +282,7 @@ class PaymentController extends Controller
             'exchange_rate'      => $normalized['exchange_rate'],
             'amount_mkd'         => $normalized['amount_mkd'],
             'notes'              => $note,
+            'paid_on' => $data['paid_on'] ?? now()->toDateString(),
         ]);
 
         $package->refresh();
@@ -382,6 +385,7 @@ class PaymentController extends Controller
             ],
             'note' => ['nullable', 'string', 'max:' . $noteMax],
             'notes' => ['nullable', 'string', 'max:' . $noteMax],
+            'paid_on' => ['nullable', 'date_format:Y-m-d'],
         ];
     }
 
@@ -455,6 +459,7 @@ class PaymentController extends Controller
             'notes' => $payment->notes,
             'recorded_by' => $recordedBy,
             'created_at' => optional($payment->created_at)?->toDateTimeString(),
+            'paid_on' => optional($payment->paid_on ?? $payment->created_at)?->toDateString(),
             'is_voided' => $payment->voided_at !== null,
             'voided_at' => optional($payment->voided_at)?->toDateTimeString(),
             'void_reason' => $payment->void_reason,

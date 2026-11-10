@@ -317,6 +317,7 @@ Route::prefix('staff')->middleware(['auth:sanctum','role:staff'])->group(functio
     Route::post('booking/clients/{client}/booking-groups', [\App\Http\Controllers\Api\V1\StaffClientBookingGroupController::class, 'store'])->whereNumber('client');
 
     // Appointments list / agenda / today
+    Route::get('appointments/calendar', [AppointmentAdminController::class, 'calendar'])->name('staff.appointments.calendar');
     Route::get  ('appointments',                    [StaffAppointmentController::class, 'index']);
     Route::get  ('appointments/agenda',             [StaffAppointmentController::class, 'agenda']);
     Route::get  ('appointments/today',              [StaffAppointmentController::class, 'today']);

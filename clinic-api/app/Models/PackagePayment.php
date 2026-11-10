@@ -19,6 +19,7 @@ class PackagePayment extends Model
         'exchange_rate',
         'amount_mkd',
         'notes',
+        'paid_on',
         'voided_at',
         'voided_by_id',
         'void_reason',
@@ -29,6 +30,7 @@ class PackagePayment extends Model
         'exchange_rate' => 'decimal:4',
         'amount_mkd'    => 'decimal:2',
         'voided_at'     => 'datetime',
+        'paid_on' => 'date',
     ];
 
     public function package(): BelongsTo

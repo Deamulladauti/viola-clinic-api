@@ -46,6 +46,7 @@ class ServicePackage extends Model
         'remaining_sessions',
         'remaining_minutes',
         'status',
+        'sold_on',
         'starts_on',
         'expires_on',
         'notes',
@@ -65,6 +66,7 @@ class ServicePackage extends Model
         'snapshot_total_minutes' => 'integer',
         'snapshot_minimum_interval_days' => 'integer',
         'snapshot_duration_minutes' => 'integer',
+        'sold_on' => 'date',
         'starts_on' => 'date',
         'expires_on' => 'date',
     ];
