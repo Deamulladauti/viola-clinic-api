@@ -38,7 +38,8 @@ class AdminFinancialReportController extends Controller
         $packageSales = ServicePackage::query()
             ->with(['service:id,name,service_category_id', 'service.category:id,name'])
             ->where('status', '!=', ServicePackage::STATUS_CANCELLED)
-            ->whereBetween('created_at', [$from->copy()->utc(), $to->copy()->utc()])
+            ->whereDate(DB::raw('COALESCE(sold_on, DATE(created_at))'), '>=', $from->toDateString())
+            ->whereDate(DB::raw('COALESCE(sold_on, DATE(created_at))'), '<=', $to->toDateString())
             ->get();
 
         $salesRows = collect();
@@ -58,7 +59,7 @@ class AdminFinancialReportController extends Controller
             $salesRows->push($this->saleRow(
                 'package',
                 $package->id,
-                $package->created_at,
+                $package->sold_on ?? $package->created_at,
                 $package->service_name ?: ($package->service?->name ?? 'Package'),
                 $package->service?->category?->name ?? 'Uncategorized',
                 (float) ($package->sale_original_price ?? $package->price_total ?? 0),
@@ -69,7 +70,8 @@ class AdminFinancialReportController extends Controller
 
         $paymentQuery = PackagePayment::query()
             ->with(['appointment.service.category', 'package.service.category'])
-            ->whereBetween('created_at', [$from->copy()->utc(), $to->copy()->utc()]);
+            ->whereDate(DB::raw('COALESCE(paid_on, DATE(created_at))'), '>=', $from->toDateString())
+            ->whereDate(DB::raw('COALESCE(paid_on, DATE(created_at))'), '<=', $to->toDateString());
 
         $payments = $paymentQuery->get();
         $giftCardPaymentIds = DB::table('gift_card_redemptions')
@@ -87,7 +89,7 @@ class AdminFinancialReportController extends Controller
 
             return [
                 'id' => (int) $payment->id,
-                'date' => $payment->created_at?->toIso8601String(),
+                'date' => ($payment->paid_on ?? $payment->created_at)?->toDateString(),
                 'method' => $giftCard ? 'gift_card' : ($payment->method ?: 'other'),
                 'source' => $payment->service_package_id ? 'package' : ($payment->appointment_id ? 'appointment' : 'client'),
                 'source_id' => $payment->service_package_id ?: ($payment->appointment_id ?: $payment->user_id),
@@ -139,7 +141,10 @@ class AdminFinancialReportController extends Controller
             ->values();
 
         return response()->json([
-            'period' => ['from' => $from->toDateString(), 'to' => $to->toDateString(), 'timezone' => $tz],
+            'period' => ['from' => $from->toDateString(), 'to' => $to->toDateString(), 'timezone' => $tz,
+                'payments_basis' => 'paid_on_with_legacy_created_at_fallback',
+                'package_sales_basis' => 'sold_on_with_legacy_created_at_fallback',
+                'performance_basis' => 'completed_appointment_date'],
             'currency' => ['sales' => 'EUR', 'cash_base' => 'MKD', 'eur_to_mkd' => $rate],
             'summary' => [
                 'sales_eur' => $salesFinal,

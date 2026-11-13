@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Appointment;
+use App\Models\PackagePayment;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -25,14 +26,18 @@ class AdminInsightsController extends Controller
         $cancelled = Appointment::where('status', 'cancelled')->count();
         $noShow = Appointment::where('status', 'no_show')->count();
 
-        $revenueTotal = Appointment::whereIn('status', ['confirmed', 'completed'])->sum('price');
-
-        $revenueToday = Appointment::whereDate('date', $today->toDateString())
-            ->whereIn('status', ['confirmed', 'completed'])
-            ->sum('price');
+        // Revenue in this legacy endpoint means payments actually recorded,
+        // not appointment prices (which can be unpaid or package-backed).
+        $paymentDate = DB::raw('COALESCE(paid_on, DATE(created_at))');
+        $paymentAmountMkd = DB::raw("CASE WHEN amount_mkd IS NOT NULL THEN amount_mkd WHEN UPPER(currency) = 'EUR' THEN amount * COALESCE(NULLIF(exchange_rate, 0), 61.6) ELSE amount END");
+        $revenueTotal = PackagePayment::query()->whereNull('voided_at')->sum($paymentAmountMkd);
+        $revenueToday = PackagePayment::query()
+            ->whereNull('voided_at')
+            ->whereDate($paymentDate, $today->toDateString())
+            ->sum($paymentAmountMkd);
 
         $topServices = Appointment::query()
-            ->select('service_id', DB::raw('COUNT(*) as count'), DB::raw('SUM(price) as revenue'))
+            ->select('service_id', DB::raw('COUNT(*) as count'))
             ->with('service:id,name')
             ->whereNotNull('service_id')
             ->groupBy('service_id')
@@ -43,7 +48,7 @@ class AdminInsightsController extends Controller
                 return [
                     'name' => $row->service?->name ?? 'Unknown',
                     'count' => (int) $row->count,
-                    'revenue' => (float) $row->revenue,
+                    'revenue' => null, // No reliable attribution of collected payments to every visit.
                 ];
             })
             ->values();
@@ -78,8 +83,10 @@ class AdminInsightsController extends Controller
                 'completed' => (int) $completed,
                 'cancelled' => (int) $cancelled,
                 'no_show' => (int) $noShow,
-                'revenue_total' => (float) $revenueTotal,
-                'revenue_today' => (float) $revenueToday,
+                'revenue_total' => (float) $revenueTotal, // MKD, actual collected payments
+                'revenue_today' => (float) $revenueToday, // MKD, paid_on date
+                'revenue_currency' => 'MKD',
+                'revenue_date_basis' => 'paid_on_with_legacy_created_at_fallback'
             ],
             'top_services' => $topServices,
             'bookings_by_day' => $bookingsByDay,
