@@ -103,7 +103,7 @@ class AppointmentAdminController extends Controller
             'service_id' => ['nullable', 'integer'],
         ]);
 
-        // Staff see the clinic-wide calendar, but never past appointments.
+        // Staff see the clinic-wide calendar, including all of today, but never previous dates.
         // The named Staff route is protected by role:staff in routes/api.php.
         $staffCalendar = $request->routeIs('staff.appointments.calendar');
         if ($staffCalendar) {
@@ -142,15 +142,9 @@ class AppointmentAdminController extends Controller
             ->whereDate('date', '<=', $to->toDateString());
 
         if ($staffCalendar) {
-            // Compare the clinic-local appointment date/time; past appointments
-            // today must not leak via manually supplied API parameters.
-            $q->where(function ($future) use ($now) {
-                $future->whereDate('date', '>', $now->toDateString())
-                    ->orWhere(function ($today) use ($now) {
-                        $today->whereDate('date', $now->toDateString())
-                            ->where('starts_at', '>=', $now->format('H:i:s'));
-                    });
-            });
+            // Allow all appointments scheduled today (including earlier time slots),
+            // but never expose previous clinic dates to Staff.
+            $q->whereDate('date', '>=', $now->toDateString());
         }
 
         // status filter: supports CSV or array
