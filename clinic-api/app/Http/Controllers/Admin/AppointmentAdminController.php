@@ -1346,6 +1346,7 @@ class AppointmentAdminController extends Controller
                     : $this->paymentAmountToMkd($payment),
                 'note' => $payment->notes,
                 'recorded_by' => $recordedBy,
+                'paid_on' => $payment->paid_on?->toDateString(),
                 'created_at' => $payment->created_at?->toIso8601String(),
                 'is_voided' => $payment->voided_at !== null,
                 'voided_at' => $payment->voided_at?->toIso8601String(),
